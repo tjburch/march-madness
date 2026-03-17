@@ -64,10 +64,10 @@ jobs:
         run: |
           TODAY=$(date -u +%Y-%m-%d)
           uv run python -c "
-          import json, gc, numpy as np, arviz as az
+          import gc, numpy as np
           from pathlib import Path
-          from src.data import build_model_data, load_seeds
-          from src.model import build_bradley_terry, fit_model
+          from src.data import build_model_data
+          from src.model import build_offense_defense_model, fit_model, get_team_strengths
           from src.simulate import build_bracket_structure, simulate_tournament
           from src.export import export_snapshot, export_odds_timeline
 
@@ -80,23 +80,24 @@ jobs:
               print(f'Processing {suffix}...')
 
               data = build_model_data(2026, gender)
-              model = build_bradley_terry(data)
+              model = build_offense_defense_model(data)
               idata = fit_model(model, draws=1000, tune=1000, chains=2)
 
-              theta = idata.posterior['theta'].values.reshape(-1, data['n_teams'])
+              strengths = get_team_strengths(idata, data)
               sigma = idata.posterior['sigma'].values.flatten()
               alpha = idata.posterior['alpha'].values.flatten()
 
               bracket = build_bracket_structure(2026, gender)
               sim = simulate_tournament(
-                  bracket, theta, sigma, data['team_ids'],
-                  n_sims=10000, seed=42,
+                  bracket, sigma_samples=sigma,
+                  team_ids=data['team_ids'], n_sims=10000, seed=42,
+                  off_samples=strengths['off_samples'],
+                  def_samples=strengths['def_samples'],
                   alpha_samples=alpha if gender == 'W' else None,
               )
 
               export_snapshot(
                   data=data,
-                  theta_samples=theta,
                   sigma_samples=sigma,
                   sim_results=sim,
                   bracket_struct=bracket,
@@ -104,15 +105,16 @@ jobs:
                   output_dir=gender_dir,
                   alpha_samples=alpha,
                   idata=idata,
+                  off_samples=strengths['off_samples'],
+                  def_samples=strengths['def_samples'],
               )
 
-              # Timeline reads ALL snapshots in the directory (including prior days)
               export_odds_timeline(
                   gender_dir / 'snapshots',
                   gender_dir / 'odds_timeline.json',
               )
 
-              del idata, theta, sigma, alpha, sim
+              del idata, strengths, sigma, alpha, sim
               gc.collect()
               print(f'  {suffix} complete.')
 

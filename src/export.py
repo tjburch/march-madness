@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 
 def export_snapshot(
     data: dict,
-    theta_samples: np.ndarray,
     sigma_samples: np.ndarray,
     sim_results: dict,
     bracket_struct: dict,
@@ -18,22 +17,14 @@ def export_snapshot(
     output_dir: Path = Path("."),
     alpha_samples: np.ndarray | None = None,
     idata=None,
+    off_samples: np.ndarray | None = None,
+    def_samples: np.ndarray | None = None,
+    theta_samples: np.ndarray | None = None,
 ) -> Path:
     """Export a single day's snapshot as JSON.
 
-    Args:
-        data: from build_model_data()
-        theta_samples: (n_samples, n_teams) posterior theta
-        sigma_samples: (n_samples,) posterior sigma
-        sim_results: from simulate_tournament()
-        bracket_struct: from build_bracket_structure()
-        date: snapshot date "YYYY-MM-DD"
-        actual_results: {slot: {winner: team_id, score: "XX-YY"}} or None
-        output_dir: directory to write into (e.g. .../mens/)
-        alpha_samples: posterior alpha (home court advantage)
-        idata: ArviZ InferenceData for extracting hyperparameters
-
-    Returns: path to the written snapshot file
+    Accepts either off_samples + def_samples (offense/defense model)
+    or theta_samples (legacy margin model).
     """
     if actual_results is None:
         actual_results = {}
@@ -42,6 +33,8 @@ def export_snapshot(
     seeds_df = bracket_struct["seeds_df"]
     advancement = sim_results["advancement"]
 
+    is_offdef = off_samples is not None and def_samples is not None
+
     # Teams section — tournament teams only
     teams = {}
     for _, seed_row in seeds_df.iterrows():
@@ -49,21 +42,34 @@ def export_snapshot(
         idx = team_id_to_idx.get(tid)
         if idx is None:
             continue
-        theta_mean = float(theta_samples[:, idx].mean())
-        theta_std = float(theta_samples[:, idx].std())
 
-        teams[str(tid)] = {
+        entry = {
             "name": seed_row["TeamName"],
             "seed": seed_row["Seed"],
             "seed_num": int(seed_row["SeedNum"]),
             "region": seed_row["Region"],
-            "theta_mean": round(theta_mean, 2),
-            "theta_std": round(theta_std, 2),
             "eliminated": False,
             "eliminated_round": None,
         }
 
-    # Mark eliminated teams from actual results
+        if is_offdef:
+            off_mean = float(off_samples[:, idx].mean())
+            off_std = float(off_samples[:, idx].std())
+            def_mean = float(def_samples[:, idx].mean())
+            def_std = float(def_samples[:, idx].std())
+            overall = off_mean + def_mean
+            entry["off_mean"] = round(off_mean, 2)
+            entry["off_std"] = round(off_std, 2)
+            entry["def_mean"] = round(def_mean, 2)
+            entry["def_std"] = round(def_std, 2)
+            entry["overall_mean"] = round(overall, 2)
+        else:
+            ref = theta_samples
+            entry["theta_mean"] = round(float(ref[:, idx].mean()), 2)
+            entry["theta_std"] = round(float(ref[:, idx].std()), 2)
+
+        teams[str(tid)] = entry
+
     _mark_eliminated(teams, actual_results, bracket_struct)
 
     # Advancement probabilities
@@ -78,10 +84,8 @@ def export_snapshot(
             rn: round(float(row[rn]), 4) for rn in round_names
         }
 
-    # Bracket with win probabilities from simulation counts
     bracket = _build_bracket_section(sim_results, bracket_struct, actual_results)
 
-    # Championship odds
     champ_odds = {}
     for _, row in advancement.iterrows():
         champ_odds[str(int(row["TeamID"]))] = round(float(row["Champion"]), 4)
@@ -97,12 +101,19 @@ def export_snapshot(
     if idata is not None:
         try:
             post = idata.posterior
-            if "sigma_conf" in post:
-                hyper["sigma_conf_mean"] = round(float(post["sigma_conf"].values.flatten().mean()), 2)
-            if "sigma_team" in post:
-                hyper["sigma_team_mean"] = round(float(post["sigma_team"].values.flatten().mean()), 2)
+            for var in ["sigma_conf", "sigma_team", "sigma_off_conf",
+                        "sigma_def_conf", "mu_intercept"]:
+                if var in post:
+                    hyper[f"{var}_mean"] = round(
+                        float(post[var].values.flatten().mean()), 2
+                    )
+            if "lkj_corr" in post:
+                corr = post["lkj_corr"].values[:, :, 0, 1].flatten()
+                hyper["off_def_corr_mean"] = round(float(corr.mean()), 2)
         except Exception:
             pass
+
+    hyper["model_type"] = "offense_defense" if is_offdef else "margin"
 
     snapshot = {
         "date": date,
@@ -145,7 +156,6 @@ def _mark_eliminated(teams: dict, actual_results: dict, bracket_struct: dict):
         if not result or "winner" not in result:
             continue
         winner_id = result["winner"]
-        # Find the two teams in this slot
         if slot in regular_slots:
             strong, weak = regular_slots[slot]
             team_a = seed_to_team.get(strong)
@@ -165,7 +175,6 @@ def _build_bracket_section(sim_results: dict, bracket_struct: dict, actual_resul
     regular_slots = bracket_struct["regular_slots"]
     n_sims = sim_results["n_sims"]
 
-    # Count how often each team wins each slot
     slot_winner_counts = {}
     for result in sim_results["all_results"]:
         for slot, winner in result["slot_winners"].items():
@@ -174,19 +183,13 @@ def _build_bracket_section(sim_results: dict, bracket_struct: dict, actual_resul
             tid = winner["team_id"]
             slot_winner_counts[slot][tid] = slot_winner_counts[slot].get(tid, 0) + 1
 
-    # For play-in slots, find the most likely winner to use in R1 bracket display
     play_in_slots = bracket_struct.get("play_in_slots", {})
     play_in_resolved = {}
     for pi_slot, (pi_strong, pi_weak) in play_in_slots.items():
-        # The winner of the play-in occupies this slot in R1 games.
-        # Determine most likely winner from R1 sim results.
-        # The R1 game referencing this play-in has it as strong or weak seed.
         team_a = seed_to_team.get(pi_strong)
         team_b = seed_to_team.get(pi_weak)
         if team_a and team_b:
-            # Count how often each play-in team wins the downstream R1 game
-            # by looking at which teams appear as R1 slot winners
-            play_in_resolved[pi_slot] = team_a  # default to strong seed
+            play_in_resolved[pi_slot] = team_a
 
     def _resolve(name):
         return seed_to_team.get(name) or play_in_resolved.get(name)
@@ -204,7 +207,6 @@ def _build_bracket_section(sim_results: dict, bracket_struct: dict, actual_resul
         a_wins = counts.get(team_a["team_id"], 0)
         p_a = round(a_wins / n_sims, 4) if n_sims > 0 else 0.5
 
-        # For play-in downstream games, show the play-in candidates
         play_in_note = None
         if weak in play_in_slots:
             pi_strong_s, pi_weak_s = play_in_slots[weak]
@@ -224,7 +226,6 @@ def _build_bracket_section(sim_results: dict, bracket_struct: dict, actual_resul
 
         bracket[slot] = entry
 
-    # Later rounds: store top contenders and their probabilities
     for slot in sorted(regular_slots.keys()):
         if slot.startswith("R1"):
             continue
@@ -235,7 +236,6 @@ def _build_bracket_section(sim_results: dict, bracket_struct: dict, actual_resul
         sorted_teams = sorted(counts.items(), key=lambda x: -x[1])
         top = []
         for tid, count in sorted_teams[:6]:
-            # Find team name from seeds
             name = None
             for seed_info in seed_to_team.values():
                 if seed_info["team_id"] == tid:
@@ -312,8 +312,8 @@ def export_team_branding(
         try:
             req = urllib.request.Request(url)
             with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-            for entry in data.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", []):
+                raw = json.loads(resp.read().decode())
+            for entry in raw.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", []):
                 team = entry.get("team", {})
                 espn_id = int(team.get("id", 0))
                 name = team.get("displayName", "")
@@ -413,12 +413,13 @@ def export_team_branding(
 
 def generate_baseline(
     output_base: Path,
-    date: str = "2026-03-16",
+    date: str = "2026-03-17",
 ) -> None:
     """Generate all baseline data files from existing model results."""
     import gc
     import arviz as az
     from src.data import build_model_data, load_seeds
+    from src.model import get_team_strengths
     from src.simulate import build_bracket_structure, simulate_tournament
 
     output_base = Path(output_base)
@@ -431,28 +432,53 @@ def generate_baseline(
         data = build_model_data(2026, gender)
         idata = az.from_netcdf(f"results/model_2026_{suffix}.nc")
 
-        theta = idata.posterior["theta"].values.reshape(-1, data["n_teams"])
+        strengths = get_team_strengths(idata, data)
         sigma = idata.posterior["sigma"].values.flatten()
         alpha = idata.posterior["alpha"].values.flatten()
 
         bracket_struct = build_bracket_structure(2026, gender)
-        sim = simulate_tournament(
-            bracket_struct, theta, sigma, data["team_ids"],
-            n_sims=10000, seed=42,
-            alpha_samples=alpha if gender == "W" else None,
-        )
 
-        filepath = export_snapshot(
-            data=data,
-            theta_samples=theta,
-            sigma_samples=sigma,
-            sim_results=sim,
-            bracket_struct=bracket_struct,
-            date=date,
-            output_dir=gender_dir,
-            alpha_samples=alpha,
-            idata=idata,
-        )
+        # Detect model type
+        is_offdef = "off_samples" in strengths
+        if is_offdef:
+            sim = simulate_tournament(
+                bracket_struct, sigma_samples=sigma,
+                team_ids=data["team_ids"], n_sims=10000, seed=42,
+                off_samples=strengths["off_samples"],
+                def_samples=strengths["def_samples"],
+                alpha_samples=alpha if gender == "W" else None,
+            )
+            filepath = export_snapshot(
+                data=data,
+                sigma_samples=sigma,
+                sim_results=sim,
+                bracket_struct=bracket_struct,
+                date=date,
+                output_dir=gender_dir,
+                alpha_samples=alpha,
+                idata=idata,
+                off_samples=strengths["off_samples"],
+                def_samples=strengths["def_samples"],
+            )
+        else:
+            sim = simulate_tournament(
+                bracket_struct, sigma_samples=sigma,
+                team_ids=data["team_ids"], n_sims=10000, seed=42,
+                theta_samples=strengths["samples"],
+                alpha_samples=alpha if gender == "W" else None,
+            )
+            filepath = export_snapshot(
+                data=data,
+                sigma_samples=sigma,
+                sim_results=sim,
+                bracket_struct=bracket_struct,
+                date=date,
+                output_dir=gender_dir,
+                alpha_samples=alpha,
+                idata=idata,
+                theta_samples=strengths["samples"],
+            )
+
         print(f"  Snapshot: {filepath}")
 
         export_odds_timeline(
