@@ -14,6 +14,57 @@ FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 az.style.use("arviz-darkgrid")
 plt.rcParams.update({"figure.dpi": 150, "savefig.dpi": 150, "savefig.bbox": "tight"})
 
+CONF_DISPLAY_NAMES = {
+    "sec": "SEC",
+    "big_twelve": "Big 12",
+    "big_ten": "Big Ten",
+    "acc": "ACC",
+    "big_east": "Big East",
+    "mwc": "Mountain West",
+    "wcc": "WCC",
+    "a_ten": "A-10",
+    "mvc": "Missouri Valley",
+    "aac": "AAC",
+    "wac": "WAC",
+    "big_west": "Big West",
+    "cusa": "C-USA",
+    "big_sky": "Big Sky",
+    "ivy": "Ivy",
+    "caa": "CAA",
+    "mac": "MAC",
+    "southland": "Southland",
+    "horizon": "Horizon",
+    "summit": "Summit",
+    "sun_belt": "Sun Belt",
+    "big_south": "Big South",
+    "southern": "Southern",
+    "a_sun": "ASUN",
+    "maac": "MAAC",
+    "patriot": "Patriot",
+    "ovc": "OVC",
+    "nec": "NEC",
+    "aec": "America East",
+    "swac": "SWAC",
+    "meac": "MEAC",
+}
+
+
+def _format_conf_name(abbrev: str) -> str:
+    return CONF_DISPLAY_NAMES.get(abbrev, abbrev.upper())
+
+
+def _fmt_pct(val: float) -> str:
+    """Format a probability as a percentage string, 1 decimal place.
+
+    Never displays 100% or 0% — uses >99.9% and <0.1% instead.
+    """
+    if val >= 0.999:
+        return ">99.9%"
+    elif val <= 0.001:
+        return "<0.1%"
+    else:
+        return f"{val:.1%}"
+
 
 def save_fig(fig, name: str):
     path = FIGURES_DIR / f"{name}.png"
@@ -58,15 +109,28 @@ def plot_team_strength_forest(
     team_names: np.ndarray,
     top_n: int = 30,
 ) -> plt.Figure:
-    """Forest plot showing HDI for top N teams."""
-    theta = idata.posterior["theta"].values.reshape(-1, len(team_names))
-    means = theta.mean(axis=0)
+    """Forest plot showing HDI for top N teams.
+
+    Auto-detects margin-based (theta) vs score-based (off/def) models.
+    """
+    posterior_vars = list(idata.posterior.data_vars)
+
+    if "off" in posterior_vars:
+        off = idata.posterior["off"].values.reshape(-1, len(team_names))
+        deff = idata.posterior["def"].values.reshape(-1, len(team_names))
+        overall = off + deff
+        xlabel = "Overall Strength (off + def)"
+    else:
+        overall = idata.posterior["theta"].values.reshape(-1, len(team_names))
+        xlabel = "Team Strength (θ)"
+
+    means = overall.mean(axis=0)
     ranking = np.argsort(-means)[:top_n]
 
     fig, ax = plt.subplots(figsize=(10, top_n * 0.3))
 
     for i, idx in enumerate(reversed(ranking)):
-        samples = theta[:, idx]
+        samples = overall[:, idx]
         hdi = az.hdi(samples, hdi_prob=0.94)
         mean = samples.mean()
         ax.plot([hdi[0], hdi[1]], [i, i], color="steelblue", linewidth=2)
@@ -74,7 +138,7 @@ def plot_team_strength_forest(
 
     ax.set_yticks(range(top_n))
     ax.set_yticklabels([team_names[ranking[top_n - 1 - i]] for i in range(top_n)])
-    ax.set_xlabel("Team Strength (θ)")
+    ax.set_xlabel(xlabel)
     ax.set_title("Posterior Team Strength (94% HDI)")
     fig.tight_layout()
     return fig
@@ -96,7 +160,10 @@ def plot_conference_effects(idata: az.InferenceData, conf_names: np.ndarray) -> 
         ax.plot(mean, i, "o", color="coral", markersize=5)
 
     ax.set_yticks(range(len(conf_names)))
-    ax.set_yticklabels([conf_names[order[len(conf_names) - 1 - i]] for i in range(len(conf_names))])
+    ax.set_yticklabels([
+        _format_conf_name(conf_names[order[len(conf_names) - 1 - i]])
+        for i in range(len(conf_names))
+    ])
     ax.axvline(0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xlabel("Conference Effect (μ_conf)")
     ax.set_title("Conference Strength (94% HDI)")
@@ -117,26 +184,33 @@ def plot_advancement_heatmap(advancement: pd.DataFrame, top_n: int = 40) -> plt.
     ]
     labels = [f"{row['TeamName']} ({row['SeedNum']})" for _, row in df.iterrows()]
 
-    data = df[round_cols].values
+    data = pd.DataFrame(df[round_cols].values, index=labels, columns=round_cols)
 
     fig, ax = plt.subplots(figsize=(12, top_n * 0.35))
-    im = ax.imshow(data, aspect="auto", cmap="YlOrRd", vmin=0, vmax=1)
+    sns.heatmap(
+        data,
+        ax=ax,
+        cmap="YlOrRd",
+        vmin=0,
+        vmax=1,
+        linewidths=0,
+        linecolor="none",
+        annot=False,
+        cbar_kws={"label": "Probability", "shrink": 0.6},
+    )
 
-    ax.set_xticks(range(len(round_cols)))
-    ax.set_xticklabels(round_cols, rotation=30, ha="right")
-    ax.set_yticks(range(len(labels)))
-    ax.set_yticklabels(labels)
-
-    # Annotate cells
+    # Custom annotations with _fmt_pct
     for i in range(data.shape[0]):
         for j in range(data.shape[1]):
-            val = data[i, j]
-            if val > 0.005:
-                text = f"{val:.0%}" if val >= 0.01 else "<1%"
-                color = "white" if val > 0.5 else "black"
-                ax.text(j, i, text, ha="center", va="center", fontsize=7, color=color)
+            val = data.values[i, j]
+            if val < 0.001:
+                continue
+            text = _fmt_pct(val)
+            color = "white" if val > 0.5 else "black"
+            ax.text(j + 0.5, i + 0.5, text, ha="center", va="center",
+                    fontsize=7, color=color)
 
-    plt.colorbar(im, ax=ax, label="Probability", shrink=0.6)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
     ax.set_title("Tournament Advancement Probabilities")
     return fig
 
@@ -146,12 +220,12 @@ def plot_championship_odds(advancement: pd.DataFrame, top_n: int = 20) -> plt.Fi
     df = advancement.head(top_n).copy()
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    colors = plt.cm.viridis(np.linspace(0.2, 0.8, top_n))
 
     bars = ax.barh(
         range(top_n),
         df["Champion"].values[::-1],
-        color=colors,
+        color="steelblue",
+        edgecolor="none",
     )
 
     labels = [
@@ -161,7 +235,7 @@ def plot_championship_odds(advancement: pd.DataFrame, top_n: int = 20) -> plt.Fi
     ax.set_yticklabels(labels)
     ax.set_xlabel("Championship Probability")
     ax.set_title("Who Wins It All?")
-    ax.xaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+    ax.xaxis.set_major_formatter(mticker.PercentFormatter(1.0, decimals=1))
     fig.tight_layout()
     return fig
 
@@ -171,17 +245,19 @@ def plot_bracket(
     bracket_struct: dict,
     most_likely: dict,
 ) -> plt.Figure:
-    """Bracket-style visualization with win probabilities."""
+    """Bracket-style visualization with win probabilities.
+
+    Uses a vertical stack (4 rows, 1 col) so each region gets the full
+    figure width, making all text large and readable.
+    """
     seeds_df = bracket_struct["seeds_df"]
 
-    # Build per-region bracket display
     regions = {"W": "West", "X": "East", "Y": "South", "Z": "Midwest"}
-    fig, axes = plt.subplots(2, 2, figsize=(20, 24))
+    fig, axes = plt.subplots(4, 1, figsize=(18, 52))
 
     for ax, (region_code, region_name) in zip(axes.flat, regions.items()):
         region_seeds = seeds_df[seeds_df["Region"] == region_code].sort_values("SeedNum")
 
-        # Get advancement data for these teams
         region_data = []
         for _, seed_row in region_seeds.iterrows():
             adv_row = advancement[advancement["TeamID"] == seed_row["TeamID"]]
@@ -199,45 +275,59 @@ def plot_bracket(
                     }
                 )
 
-        # Display as a table within the axes
-        ax.set_xlim(0, 10)
-        ax.set_ylim(0, len(region_data) + 1)
-        ax.set_title(f"{region_name} Region", fontsize=14, fontweight="bold")
+        n_teams = len(region_data)
+        ax.set_xlim(-0.2, 10.2)
+        ax.set_ylim(-0.5, n_teams + 1.2)
+        ax.set_title(f"{region_name} Region", fontsize=20, fontweight="bold", pad=14)
         ax.axis("off")
 
         headers = ["Seed", "Team", "R32", "S16", "E8", "F4", "Champ"]
-        x_positions = [0.5, 2.0, 4.5, 5.8, 7.0, 8.2, 9.3]
+        x_positions = [0.3, 2.5, 5.2, 6.3, 7.4, 8.5, 9.6]
 
-        for col, (header, x) in enumerate(zip(headers, x_positions)):
-            ax.text(x, len(region_data) + 0.5, header, fontweight="bold",
-                    ha="center", fontsize=9)
+        for header, x in zip(headers, x_positions):
+            ax.text(
+                x, n_teams + 0.5, header,
+                fontweight="bold", ha="center", fontsize=16,
+            )
+
+        # Divider line under headers
+        ax.plot([0, 10.2], [n_teams + 0.05, n_teams + 0.05],
+                color="gray", linewidth=0.5, alpha=0.4)
 
         for i, team in enumerate(region_data):
-            y = len(region_data) - i - 0.5
-            ax.text(x_positions[0], y, str(team["seed"]), ha="center", fontsize=9)
-            ax.text(x_positions[1], y, team["name"], ha="center", fontsize=9)
+            y = n_teams - i - 0.5
+
+            ax.text(x_positions[0], y, str(team["seed"]),
+                    ha="center", va="center", fontsize=15, fontweight="bold")
+            ax.text(x_positions[1], y, team["name"],
+                    ha="center", va="center", fontsize=15)
+
             for j, key in enumerate(["r32", "s16", "e8", "f4", "champ"]):
                 val = team[key]
-                text = f"{val:.0%}" if val >= 0.01 else "<1%" if val > 0 else "-"
-                color = plt.cm.YlOrRd(val)
+                text = _fmt_pct(val) if val >= 0.001 else "-"
+                facecolor = plt.cm.YlOrRd(val)
+                text_color = "white" if val > 0.5 else "black"
                 ax.text(
                     x_positions[j + 2],
                     y,
                     text,
                     ha="center",
-                    fontsize=8,
-                    color="black",
+                    va="center",
+                    fontsize=15,
+                    fontweight="bold" if val >= 0.5 else "normal",
+                    color=text_color,
                     bbox=dict(
-                        boxstyle="round,pad=0.2",
-                        facecolor=color,
-                        alpha=0.6 if val > 0.01 else 0.2,
+                        boxstyle="round,pad=0.35",
+                        facecolor=facecolor,
+                        alpha=0.7 if val > 0.01 else 0.2,
+                        edgecolor="none",
                     ),
                 )
 
     fig.suptitle(
-        "2026 NCAA Tournament Bracket Forecast", fontsize=16, fontweight="bold", y=0.98
+        "2026 NCAA Tournament Bracket Forecast", fontsize=24, fontweight="bold", y=0.995
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.tight_layout(rect=[0, 0, 1, 0.99])
     return fig
 
 
@@ -312,7 +402,7 @@ def plot_championship_odds_comparison(
         ax.set_yticklabels(labels)
         ax.set_xlabel("Championship Probability")
         ax.set_title(title)
-        ax.xaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+        ax.xaxis.set_major_formatter(mticker.PercentFormatter(1.0, decimals=1))
 
     fig.suptitle("Who Wins It All?", fontsize=14, fontweight="bold")
     fig.tight_layout()
@@ -325,7 +415,6 @@ def plot_upset_probabilities(advancement: pd.DataFrame) -> plt.Figure:
     region_colors = {"W": "#1b9e77", "X": "#d95f02", "Y": "#7570b3", "Z": "#e7298a"}
     matchups = [(i, 17 - i) for i in range(1, 9)]
 
-    # Collect all games
     games = []
     for region_code in ["W", "X", "Y", "Z"]:
         region_data = advancement[advancement["Region"] == region_code]
@@ -353,7 +442,6 @@ def plot_upset_probabilities(advancement: pd.DataFrame) -> plt.Figure:
             label=region_name, edgecolors="white", linewidth=0.5,
         )
 
-    # Annotate notable upsets (P > 20%)
     for g in games:
         if g["upset_prob"] > 0.20:
             ax.annotate(
@@ -368,5 +456,178 @@ def plot_upset_probabilities(advancement: pd.DataFrame) -> plt.Figure:
     ax.axhline(0.5, color="red", linestyle="--", alpha=0.3, label="Toss-up")
     ax.legend(fontsize=9)
     ax.set_ylim(-0.02, max(g["upset_prob"] for g in games) + 0.08)
+    fig.tight_layout()
+    return fig
+
+
+def plot_off_def_scatter(
+    strengths: dict,
+    conf_idx: np.ndarray,
+    conf_names: np.ndarray,
+    top_n_label: int = 15,
+) -> plt.Figure:
+    """Offense vs defense posterior means, colored by conference."""
+    off_means = strengths["off_means"]
+    def_means = strengths["def_means"]
+    team_names = strengths["team_names"]
+    overall = strengths["overall_means"]
+    ranking = np.argsort(-overall)
+
+    top_confs = ["sec", "big_twelve", "big_ten", "acc", "big_east"]
+    conf_colors = {
+        "sec": "#e41a1c",
+        "big_twelve": "#377eb8",
+        "big_ten": "#4daf4a",
+        "acc": "#984ea3",
+        "big_east": "#ff7f00",
+    }
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    for i in range(len(off_means)):
+        conf = conf_names[conf_idx[i]]
+        if conf not in top_confs:
+            ax.scatter(off_means[i], def_means[i], c="lightgray", s=20, alpha=0.5, zorder=1)
+
+    for conf in top_confs:
+        mask = np.array([conf_names[conf_idx[i]] == conf for i in range(len(off_means))])
+        if mask.any():
+            ax.scatter(
+                off_means[mask], def_means[mask],
+                c=conf_colors[conf], s=50, alpha=0.8, zorder=2,
+                label=_format_conf_name(conf),
+                edgecolors="white", linewidth=0.5,
+            )
+
+    for rank_pos in range(min(top_n_label, len(ranking))):
+        idx = ranking[rank_pos]
+        ax.annotate(
+            team_names[idx],
+            (off_means[idx], def_means[idx]),
+            textcoords="offset points", xytext=(5, 3),
+            fontsize=7, alpha=0.9,
+        )
+
+    # Annotate with marginal correlation (what the reader sees on this plot)
+    marginal_corr = np.corrcoef(off_means, def_means)[0, 1]
+    ax.text(
+        0.02, 0.98,
+        f"Correlation: {marginal_corr:+.2f}",
+        transform=ax.transAxes, va="top", fontsize=11, fontweight="bold",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
+
+    ax.axhline(0, color="gray", linestyle="--", alpha=0.3)
+    ax.axvline(0, color="gray", linestyle="--", alpha=0.3)
+    ax.set_xlabel("Offensive Strength (higher = more points scored)")
+    ax.set_ylabel("Defensive Strength (higher = fewer points allowed)")
+    ax.set_title("Offense vs Defense")
+    ax.legend(loc="lower right", fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def plot_off_def_rankings(
+    strengths: dict,
+    top_n: int = 20,
+) -> plt.Figure:
+    """Forest plots for top teams by offense and defense separately."""
+    off_samples = strengths["off_samples"]
+    def_samples = strengths["def_samples"]
+    team_names = strengths["team_names"]
+
+    off_means = off_samples.mean(axis=0)
+    def_means = def_samples.mean(axis=0)
+    off_ranking = np.argsort(-off_means)[:top_n]
+    def_ranking = np.argsort(-def_means)[:top_n]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, top_n * 0.3))
+
+    for ax, ranking, samples, title, color in [
+        (ax1, off_ranking, off_samples, "Offensive Strength", "coral"),
+        (ax2, def_ranking, def_samples, "Defensive Strength", "steelblue"),
+    ]:
+        for i, idx in enumerate(reversed(ranking)):
+            s = samples[:, idx]
+            hdi = az.hdi(s, hdi_prob=0.94)
+            mean = s.mean()
+            ax.plot([hdi[0], hdi[1]], [i, i], color=color, linewidth=2)
+            ax.plot(mean, i, "o", color=color, markersize=5)
+
+        ax.set_yticks(range(top_n))
+        ax.set_yticklabels([team_names[ranking[top_n - 1 - i]] for i in range(top_n)])
+        ax.axvline(0, color="gray", linestyle="--", alpha=0.5)
+        ax.set_xlabel(title)
+        ax.set_title(f"Top {top_n} by {title} (94% HDI)")
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_conference_off_def(
+    idata: az.InferenceData,
+    conf_names: np.ndarray,
+) -> plt.Figure:
+    """Conference offense vs defense effects as a 2D scatter."""
+    mu_off = idata.posterior["mu_off_conf"].values.reshape(-1, len(conf_names))
+    mu_def = idata.posterior["mu_def_conf"].values.reshape(-1, len(conf_names))
+
+    off_means = mu_off.mean(axis=0)
+    def_means = mu_def.mean(axis=0)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    ax.scatter(off_means, def_means, s=60, c="steelblue", edgecolors="white", zorder=2)
+    for i, name in enumerate(conf_names):
+        ax.annotate(
+            _format_conf_name(name),
+            (off_means[i], def_means[i]),
+            textcoords="offset points", xytext=(5, 3),
+            fontsize=8,
+        )
+
+    ax.axhline(0, color="gray", linestyle="--", alpha=0.3)
+    ax.axvline(0, color="gray", linestyle="--", alpha=0.3)
+    ax.set_xlabel("Conference Offensive Effect")
+    ax.set_ylabel("Conference Defensive Effect")
+    ax.set_title("Conference Strength: Offense vs Defense")
+    fig.tight_layout()
+    return fig
+
+
+def plot_loo_comparison(comparison: pd.DataFrame) -> plt.Figure:
+    """Plot ELPD with error bars from az.compare()."""
+    fig, ax = plt.subplots(figsize=(8, 4))
+    az.plot_compare(comparison, ax=ax)
+    ax.set_title("Model Comparison: Gaussian vs Student-t Likelihood (LOO-CV)")
+    fig.tight_layout()
+    return fig
+
+
+def plot_posterior_predictive_scores(
+    idata: az.InferenceData,
+    observed_scores: np.ndarray,
+) -> plt.Figure:
+    """Predicted score distributions overlaid on observed score histogram."""
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    ax.hist(
+        observed_scores, bins=25, density=True, alpha=0.6,
+        color="steelblue", label="Observed scores", edgecolor="none",
+    )
+
+    if hasattr(idata, "posterior_predictive"):
+        pp_key = "score_i" if "score_i" in idata.posterior_predictive else None
+        if pp_key:
+            pp_scores = idata.posterior_predictive[pp_key].values.flatten()
+            ax.hist(
+                pp_scores, bins=25, density=True, alpha=0.4,
+                color="coral", label="Posterior predictive", edgecolor="none",
+            )
+
+    ax.set_xlabel("Score")
+    ax.set_ylabel("Density")
+    ax.set_title("Posterior Predictive Check: Score Distribution")
+    ax.legend()
     fig.tight_layout()
     return fig

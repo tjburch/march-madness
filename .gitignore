@@ -42,6 +42,9 @@ blogimages/
 
 # Markdown files
 *.md
+!implementation_summary_off_def.md
+!blog_post.md
+!docs/specs/*.md
 
 # Jupyter
 .ipynb_checkpoints/
@@ -50,3 +53,6 @@ blogimages/
 .agents/
 .claude/
 skills-lock.json
+
+# Worktrees
+.worktrees/
