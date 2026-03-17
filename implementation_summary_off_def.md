@@ -150,13 +150,32 @@ Fits both Normal and Student-t variants on the same data. Computes log-likelihoo
 
 ---
 
+## Offense/Defense Correlation: Simpson's Paradox
+
+The model's LKJ correlation parameter and the empirical correlation of the posterior means tell **opposite stories** — this is a textbook Simpson's paradox driven by the hierarchical conference structure.
+
+| Correlation | Value | What it measures |
+|-------------|-------|-----------------|
+| **Marginal (empirical)** | **+0.384** | Correlation of posterior mean off/def across all 365 teams. This is what the scatter plot shows. |
+| Between-conference | +0.827 | Correlation of conference-level offensive and defensive effects (`mu_off_conf` vs `mu_def_conf`). Strong conferences produce teams that are good at both. |
+| Within-conference (residual) | -0.228 | After removing conference means: within a given conference, better offense tends to come at the cost of defense. |
+| LKJ posterior | -0.204 ± 0.061 | The model's estimate of the within-conference team-level correlation. Matches the within-conference residual. |
+
+**Interpretation**: The positive marginal correlation is driven almost entirely by conference quality — SEC and Big 12 teams cluster in the upper-right (good at both), while low-major conferences cluster in the lower-left (bad at both). But *within* a conference, there's a mild tradeoff: a team that invests in offense tends to sacrifice some defense, and vice versa.
+
+**Plot annotation**: The scatter plot annotates the **marginal correlation (+0.384)** because that's what the reader sees. The LKJ within-conference correlation is a modeling detail discussed in the blog post's Simpson's paradox section.
+
+**Why this matters for the blog**: This is arguably a more interesting finding than a simple correlation. The conference structure creates an ecological fallacy — looking at all teams together suggests offense and defense go together, but within conferences the opposite is true. Houston (off=7.0, def=16.6) and Michigan (off=17.5, def=11.4) illustrate the within-conference tradeoff.
+
+---
+
 ## Visualizations (`src/visualize.py`)
 
 ### New Plots
 
 | Function | Description |
 |----------|-------------|
-| `plot_off_def_scatter(strengths, conf_idx, conf_names)` | Offense vs defense posterior means, colored by top 5 conferences, top 15 teams labeled, posterior correlation annotated |
+| `plot_off_def_scatter(strengths, conf_idx, conf_names)` | Offense vs defense posterior means, colored by top 5 conferences, top 15 teams labeled, **marginal** correlation annotated (see Simpson's paradox section) |
 | `plot_off_def_rankings(strengths, top_n=20)` | Side-by-side forest plots: top 20 by offense, top 20 by defense (94% HDI) |
 | `plot_conference_off_def(idata, conf_names)` | Conference offensive vs defensive effects as 2D scatter |
 | `plot_loo_comparison(comparison)` | ELPD with error bars from `az.compare()` |

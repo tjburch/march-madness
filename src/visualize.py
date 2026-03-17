@@ -501,14 +501,14 @@ def plot_off_def_scatter(
             fontsize=7, alpha=0.9,
         )
 
-    if strengths.get("off_def_corr") is not None:
-        corr_mean = strengths["off_def_corr"].mean()
-        ax.text(
-            0.02, 0.98,
-            f"Posterior correlation: {corr_mean:.2f}",
-            transform=ax.transAxes, va="top", fontsize=10,
-            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
-        )
+    # Annotate with marginal correlation (what the reader sees on this plot)
+    marginal_corr = np.corrcoef(off_means, def_means)[0, 1]
+    ax.text(
+        0.02, 0.98,
+        f"Correlation: {marginal_corr:+.2f}",
+        transform=ax.transAxes, va="top", fontsize=11, fontweight="bold",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
 
     ax.axhline(0, color="gray", linestyle="--", alpha=0.3)
     ax.axvline(0, color="gray", linestyle="--", alpha=0.3)
