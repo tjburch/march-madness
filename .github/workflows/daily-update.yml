@@ -1,4 +1,5 @@
 name: Daily Tournament Update
+# Fits model daily during tournament, exports dashboard JSON to site repo
 
 on:
   schedule:
