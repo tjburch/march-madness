@@ -1,0 +1,16 @@
+[project]
+name = "march-madness"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "arviz>=0.23.4",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+    "nutpie>=0.16.6",
+    "pandas>=3.0.1",
+    "pymc>=5.28.0",
+    "scipy>=1.17.1",
+    "seaborn>=0.13.2",
+]
