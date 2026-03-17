@@ -53,6 +53,19 @@ def _format_conf_name(abbrev: str) -> str:
     return CONF_DISPLAY_NAMES.get(abbrev, abbrev.upper())
 
 
+def _fmt_pct(val: float) -> str:
+    """Format a probability as a percentage string, 1 decimal place.
+
+    Never displays 100% or 0% — uses >99.9% and <0.1% instead.
+    """
+    if val >= 0.999:
+        return ">99.9%"
+    elif val <= 0.001:
+        return "<0.1%"
+    else:
+        return f"{val:.1%}"
+
+
 def save_fig(fig, name: str):
     path = FIGURES_DIR / f"{name}.png"
     fig.savefig(path, bbox_inches="tight")
@@ -182,26 +195,20 @@ def plot_advancement_heatmap(advancement: pd.DataFrame, top_n: int = 40) -> plt.
         vmax=1,
         linewidths=0,
         linecolor="none",
-        annot=True,
-        fmt=".0%",
-        annot_kws={"fontsize": 8},
+        annot=False,
         cbar_kws={"label": "Probability", "shrink": 0.6},
     )
 
-    # Fix annotation text: hide near-zero values, set contrast colors
-    for text_obj in ax.texts:
-        val_str = text_obj.get_text()
-        try:
-            val = float(val_str.strip("%")) / 100
-        except ValueError:
-            continue
-        if val < 0.005:
-            text_obj.set_text("")
-        elif val < 0.01:
-            text_obj.set_text("<1%")
-            text_obj.set_color("black")
-        else:
-            text_obj.set_color("white" if val > 0.5 else "black")
+    # Custom annotations with _fmt_pct
+    for i in range(data.shape[0]):
+        for j in range(data.shape[1]):
+            val = data.values[i, j]
+            if val < 0.001:
+                continue
+            text = _fmt_pct(val)
+            color = "white" if val > 0.5 else "black"
+            ax.text(j + 0.5, i + 0.5, text, ha="center", va="center",
+                    fontsize=7, color=color)
 
     ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
     ax.set_title("Tournament Advancement Probabilities")
@@ -228,7 +235,7 @@ def plot_championship_odds(advancement: pd.DataFrame, top_n: int = 20) -> plt.Fi
     ax.set_yticklabels(labels)
     ax.set_xlabel("Championship Probability")
     ax.set_title("Who Wins It All?")
-    ax.xaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+    ax.xaxis.set_major_formatter(mticker.PercentFormatter(1.0, decimals=1))
     fig.tight_layout()
     return fig
 
@@ -297,7 +304,7 @@ def plot_bracket(
 
             for j, key in enumerate(["r32", "s16", "e8", "f4", "champ"]):
                 val = team[key]
-                text = f"{val:.0%}" if val >= 0.01 else "<1%" if val > 0 else "-"
+                text = _fmt_pct(val) if val >= 0.001 else "-"
                 facecolor = plt.cm.YlOrRd(val)
                 text_color = "white" if val > 0.5 else "black"
                 ax.text(
@@ -395,7 +402,7 @@ def plot_championship_odds_comparison(
         ax.set_yticklabels(labels)
         ax.set_xlabel("Championship Probability")
         ax.set_title(title)
-        ax.xaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+        ax.xaxis.set_major_formatter(mticker.PercentFormatter(1.0, decimals=1))
 
     fig.suptitle("Who Wins It All?", fontsize=14, fontweight="bold")
     fig.tight_layout()
@@ -514,7 +521,7 @@ def plot_off_def_scatter(
     ax.axvline(0, color="gray", linestyle="--", alpha=0.3)
     ax.set_xlabel("Offensive Strength (higher = more points scored)")
     ax.set_ylabel("Defensive Strength (higher = fewer points allowed)")
-    ax.set_title("Offense vs Defense: Who's Good at What?")
+    ax.set_title("Offense vs Defense")
     ax.legend(loc="lower right", fontsize=9)
     fig.tight_layout()
     return fig
@@ -605,7 +612,7 @@ def plot_posterior_predictive_scores(
     fig, ax = plt.subplots(figsize=(10, 5))
 
     ax.hist(
-        observed_scores, bins=40, density=True, alpha=0.6,
+        observed_scores, bins=25, density=True, alpha=0.6,
         color="steelblue", label="Observed scores", edgecolor="none",
     )
 
@@ -614,7 +621,7 @@ def plot_posterior_predictive_scores(
         if pp_key:
             pp_scores = idata.posterior_predictive[pp_key].values.flatten()
             ax.hist(
-                pp_scores, bins=40, density=True, alpha=0.4,
+                pp_scores, bins=25, density=True, alpha=0.4,
                 color="coral", label="Posterior predictive", edgecolor="none",
             )
 
