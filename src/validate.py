@@ -1,5 +1,6 @@
 """Historical validation: fit on regular season, predict tournament."""
 
+import gc
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
@@ -100,6 +101,7 @@ def run_validation(
         if result is not None:
             season_results.append(result)
             all_predictions.append(result["predictions"])
+        gc.collect()
 
     if not all_predictions:
         return {"seasons": [], "predictions": pd.DataFrame()}

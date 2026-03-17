@@ -23,8 +23,16 @@ def generate_submission(
     """Generate Kaggle submission from posterior samples for both genders.
 
     Accepts either theta_samples (margin model) or off/def samples (score model).
+    If template_path doesn't exist, generates all pairings from team IDs.
     """
-    template = pd.read_csv(template_path)
+    if Path(template_path).exists():
+        template = pd.read_csv(template_path)
+    else:
+        # Generate all pairings: 2026_TeamLow_TeamHigh
+        from itertools import combinations
+        all_ids = sorted(set(int(t) for t in men_team_ids) | set(int(t) for t in women_team_ids))
+        rows = [{"ID": f"2026_{lo}_{hi}", "Pred": 0.5} for lo, hi in combinations(all_ids, 2)]
+        template = pd.DataFrame(rows)
 
     parts = template["ID"].str.split("_", expand=True)
     id_low = parts[1].astype(int).values
