@@ -12,8 +12,25 @@ wheels/
 # macOS
 .DS_Store
 
-# Data (downloaded separately)
+# Data (downloaded separately — large files excluded)
 data/
+# But allow the CSVs needed for model fitting
+!data/kaggle/
+data/kaggle/*
+!data/kaggle/MTeams.csv
+!data/kaggle/WTeams.csv
+!data/kaggle/MTeamConferences.csv
+!data/kaggle/WTeamConferences.csv
+!data/kaggle/Conferences.csv
+!data/kaggle/MRegularSeasonCompactResults.csv
+!data/kaggle/WRegularSeasonCompactResults.csv
+!data/kaggle/MNCAATourneySeeds.csv
+!data/kaggle/WNCAATourneySeeds.csv
+!data/kaggle/MNCAATourneyCompactResults.csv
+!data/kaggle/WNCAATourneyCompactResults.csv
+!data/kaggle/MNCAATourneySlots.csv
+!data/kaggle/WNCAATourneySlots.csv
+!data/kaggle/MNCAATourneySeedRoundSlots.csv
 
 # Model artifacts (large)
 results/*.nc
