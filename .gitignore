@@ -42,6 +42,7 @@ blogimages/
 
 # Markdown files
 *.md
+!implementation_summary_off_def.md
 
 # Jupyter
 .ipynb_checkpoints/
