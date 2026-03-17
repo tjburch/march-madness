@@ -6,13 +6,15 @@ import pymc as pm
 import arviz as az
 
 from src.data import build_model_data
-from src.model import build_bradley_terry, fit_model, check_diagnostics, get_team_strengths
+from src.model import (
+    build_offense_defense_model, fit_model, check_diagnostics, get_team_strengths,
+)
 from src.simulate import build_bracket_structure, simulate_tournament, tail_analysis, championship_gini
 from src.submission import generate_submission
 
 
 def run_gender(gender: str, season: int = 2026, n_sims: int = 10000):
-    """Fit model and simulate tournament for one gender."""
+    """Fit offense/defense model and simulate tournament for one gender."""
     label = "Men's" if gender == "M" else "Women's"
     suffix = "mens" if gender == "M" else "womens"
 
@@ -24,14 +26,14 @@ def run_gender(gender: str, season: int = 2026, n_sims: int = 10000):
     data = build_model_data(season, gender)
     print(f"  {data['n_teams']} teams, {data['n_conferences']} conferences, {data['n_games']} games")
 
-    # 2. Build and fit model
-    model = build_bradley_terry(data)
+    # 2. Build and fit offense/defense model
+    model = build_offense_defense_model(data, likelihood="normal")
 
     print("\nChecking priors...")
     with model:
         prior = pm.sample_prior_predictive(draws=500, random_seed=42)
-    prior_margins = prior.prior_predictive["margin"].values.flatten()
-    print(f"  Prior margin std: {prior_margins.std():.1f} (observed: {data['margin'].std():.1f})")
+    prior_scores = prior.prior_predictive["score_i"].values.flatten()
+    print(f"  Prior score std: {prior_scores.std():.1f} (observed: {data['score_i'].std():.1f})")
 
     print("\nFitting model (2000 draws, 2000 tune, 4 chains)...")
     idata = fit_model(model, draws=2000, tune=2000, chains=4)
@@ -41,27 +43,32 @@ def run_gender(gender: str, season: int = 2026, n_sims: int = 10000):
     diag = check_diagnostics(idata)
     print(f"\nDiagnostics:")
     print(f"  Divergences: {diag['divergences']}")
-    print(f"  Max R-hat: {diag['max_rhat_theta']:.4f}")
-    print(f"  Min ESS bulk: {diag['min_ess_bulk_theta']:.0f}")
+    print(f"  Max R-hat: {diag['max_rhat']:.4f}")
+    print(f"  Min ESS bulk: {diag['min_ess_bulk']:.0f}")
     print(f"  PASS: {diag['pass']}")
 
     # 4. Top teams
     strengths = get_team_strengths(idata, data)
     print(f"\nTop 10 Teams:")
     for rank, idx in enumerate(strengths["ranking"][:10], 1):
-        print(f"  {rank}. {strengths['team_names'][idx]:<20s} θ={strengths['means'][idx]:.1f}")
+        name = strengths["team_names"][idx]
+        overall = strengths["overall_means"][idx]
+        off_val = strengths["off_means"][idx]
+        def_val = strengths["def_means"][idx]
+        print(f"  {rank}. {name:<20s} overall={overall:.1f} (off={off_val:.1f}, def={def_val:.1f})")
 
     # 5. Simulate tournament
     print(f"\nSimulating {n_sims:,} tournaments...")
     bracket_struct = build_bracket_structure(season, gender)
-    theta_samples = idata.posterior["theta"].values.reshape(-1, data["n_teams"])
+    off_samples = strengths["off_samples"]
+    def_samples = strengths["def_samples"]
     sigma_samples = idata.posterior["sigma"].values.flatten()
     alpha_samples = idata.posterior["alpha"].values.flatten()
 
-    # Pass alpha_samples for women's home court advantage in R1/R2
     sim_results = simulate_tournament(
-        bracket_struct, theta_samples, sigma_samples,
-        data["team_ids"], n_sims=n_sims, seed=42,
+        bracket_struct, sigma_samples=sigma_samples,
+        team_ids=data["team_ids"], n_sims=n_sims, seed=42,
+        off_samples=off_samples, def_samples=def_samples,
         alpha_samples=alpha_samples if gender == "W" else None,
     )
 
@@ -85,9 +92,36 @@ def run_gender(gender: str, season: int = 2026, n_sims: int = 10000):
     return {
         "data": data,
         "idata": idata,
-        "theta_samples": theta_samples,
+        "off_samples": off_samples,
+        "def_samples": def_samples,
         "sigma_samples": sigma_samples,
         "sim_results": sim_results,
+    }
+
+
+def compare_likelihoods(data: dict, draws: int = 2000, tune: int = 2000) -> dict:
+    """Compare Gaussian vs Student-t likelihoods via LOO-CV."""
+    models = {}
+    idatas = {}
+    for likelihood in ["normal", "studentt"]:
+        print(f"\nFitting {likelihood} model...")
+        model = build_offense_defense_model(data, likelihood=likelihood)
+        idata = fit_model(model, draws=draws, tune=tune, chains=4)
+        pm.compute_log_likelihood(idata, model=model)
+        models[likelihood] = model
+        idatas[likelihood] = idata
+
+    comparison = az.compare(
+        {"Gaussian": idatas["normal"], "Student-t": idatas["studentt"]},
+        ic="loo",
+    )
+    print("\nModel Comparison (LOO-CV):")
+    print(comparison[["rank", "elpd_loo", "elpd_diff", "weight"]])
+
+    return {
+        "comparison": comparison,
+        "idatas": idatas,
+        "models": models,
     }
 
 
@@ -101,12 +135,14 @@ def main():
     print("  Generating Kaggle Submission")
     print(f"{'='*60}")
     generate_submission(
-        men_theta=results["M"]["theta_samples"],
         men_sigma=results["M"]["sigma_samples"],
         men_team_ids=results["M"]["data"]["team_ids"],
-        women_theta=results["W"]["theta_samples"],
+        men_off=results["M"]["off_samples"],
+        men_def=results["M"]["def_samples"],
         women_sigma=results["W"]["sigma_samples"],
         women_team_ids=results["W"]["data"]["team_ids"],
+        women_off=results["W"]["off_samples"],
+        women_def=results["W"]["def_samples"],
     )
 
     print("\nDone!")

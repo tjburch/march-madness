@@ -50,3 +50,6 @@ blogimages/
 .agents/
 .claude/
 skills-lock.json
+
+# Worktrees
+.worktrees/

@@ -51,10 +51,12 @@ def build_bracket_structure(season: int = 2026, gender: str = "M") -> dict:
 def _play_game(
     team_a: dict,
     team_b: dict,
-    theta: np.ndarray,
     sigma_val: float,
     team_id_to_idx: dict,
     rng: np.random.Generator,
+    theta: np.ndarray | None = None,
+    off: np.ndarray | None = None,
+    deff: np.ndarray | None = None,
     home_advantage: float = 0.0,
     home_team_id: int | None = None,
 ) -> dict:
@@ -63,27 +65,39 @@ def _play_game(
     idx_b = team_id_to_idx.get(team_b["team_id"])
 
     if idx_a is not None and idx_b is not None:
-        diff = theta[idx_a] - theta[idx_b]
+        if off is not None and deff is not None:
+            diff = (off[idx_a] - deff[idx_b]) - (off[idx_b] - deff[idx_a])
+            denom = sigma_val * np.sqrt(2)
+        else:
+            diff = theta[idx_a] - theta[idx_b]
+            denom = sigma_val
+
         if home_team_id == team_a["team_id"]:
             diff += home_advantage
         elif home_team_id == team_b["team_id"]:
             diff -= home_advantage
-        p_a_wins = norm.cdf(diff / sigma_val)
+
+        p_a_wins = norm.cdf(diff / denom)
         return team_a if rng.random() < p_a_wins else team_b
     return team_a  # fallback
 
 
 def simulate_tournament_single(
     bracket_struct: dict,
-    theta: np.ndarray,
     sigma_val: float,
     team_id_to_idx: dict,
     rng: np.random.Generator,
+    theta: np.ndarray | None = None,
+    off: np.ndarray | None = None,
+    deff: np.ndarray | None = None,
     alpha_val: float = 0.0,
 ) -> dict:
     """Simulate one complete tournament bracket.
 
     Args:
+        theta: Team strength array (margin model) or None if using off/def.
+        off: Offensive strength array (score model) or None.
+        deff: Defensive strength array (score model) or None.
         alpha_val: Home court advantage from the posterior. Used for women's
             tournament R1/R2 where top 16 seeds host on campus.
 
@@ -97,6 +111,11 @@ def simulate_tournament_single(
     regular_slots = bracket_struct["regular_slots"]
     is_womens = bracket_struct.get("gender") == "W"
 
+    game_kwargs = dict(
+        sigma_val=sigma_val, team_id_to_idx=team_id_to_idx, rng=rng,
+        theta=theta, off=off, deff=deff,
+    )
+
     # resolved maps a name (seed or slot) to the team occupying it
     resolved = dict(seed_to_team)
 
@@ -104,7 +123,7 @@ def simulate_tournament_single(
     for slot, (strong, weak) in play_in_slots.items():
         team_a = resolved[strong]
         team_b = resolved[weak]
-        winner = _play_game(team_a, team_b, theta, sigma_val, team_id_to_idx, rng)
+        winner = _play_game(team_a, team_b, **game_kwargs)
         resolved[slot] = winner
 
     # Process regular slots in round order
@@ -114,7 +133,7 @@ def simulate_tournament_single(
     )
 
     slot_winners = {}
-    round_results = {}  # round_num -> [winner_dicts]
+    round_results = {}
 
     for slot in slot_order:
         strong, weak = regular_slots[slot]
@@ -129,7 +148,6 @@ def simulate_tournament_single(
         home_team_id = None
         round_num = int(slot[1])
         if is_womens and round_num <= 2:
-            # Higher-seeded team (lower seed_num) is the host
             if team_a["seed_num"] < team_b["seed_num"]:
                 if team_a["seed_num"] <= 4:
                     home_advantage = alpha_val
@@ -140,7 +158,7 @@ def simulate_tournament_single(
                     home_team_id = team_b["team_id"]
 
         winner = _play_game(
-            team_a, team_b, theta, sigma_val, team_id_to_idx, rng,
+            team_a, team_b, **game_kwargs,
             home_advantage=home_advantage, home_team_id=home_team_id,
         )
         resolved[slot] = winner
@@ -160,11 +178,13 @@ def simulate_tournament_single(
 
 def simulate_tournament(
     bracket_struct: dict,
-    theta_samples: np.ndarray,
     sigma_samples: np.ndarray,
     team_ids: np.ndarray,
     n_sims: int = 10000,
     seed: int = 42,
+    theta_samples: np.ndarray | None = None,
+    off_samples: np.ndarray | None = None,
+    def_samples: np.ndarray | None = None,
     alpha_samples: np.ndarray | None = None,
 ) -> dict:
     """Run full tournament simulation across posterior samples.
@@ -172,20 +192,18 @@ def simulate_tournament(
     For each simulation, draw one posterior sample of team strengths,
     then simulate the entire bracket.
 
-    Args:
-        alpha_samples: Posterior samples of home court advantage. Used for
-            women's tournament where top 16 seeds host R1/R2.
+    Accepts either theta_samples (margin model) or off_samples + def_samples
+    (score-based offense/defense model).
     """
     rng = np.random.default_rng(seed)
     team_id_to_idx = {int(tid): i for i, tid in enumerate(team_ids)}
 
-    n_posterior = theta_samples.shape[0]
+    # Determine which samples to use for indexing
+    ref_samples = off_samples if off_samples is not None else theta_samples
+    n_posterior = ref_samples.shape[0]
     seeds_df = bracket_struct["seeds_df"]
     tourney_team_ids = set(int(t) for t in seeds_df["TeamID"].values)
 
-    # Advancement tracking: index 0=made tournament, 1=won R1 (made R32),
-    # 2=won R2 (Sweet 16), 3=won R3 (Elite 8), 4=won R4 (Final Four),
-    # 5=won R5 (Championship game), 6=won R6 (Champion)
     round_names = [
         "Round of 64",
         "Round of 32",
@@ -202,13 +220,21 @@ def simulate_tournament(
 
     for sim_i in range(n_sims):
         sample_idx = rng.integers(0, n_posterior)
-        theta = theta_samples[sample_idx]
         sigma_val = sigma_samples[sample_idx]
         alpha_val = alpha_samples[sample_idx] if alpha_samples is not None else 0.0
 
+        if off_samples is not None and def_samples is not None:
+            off = off_samples[sample_idx]
+            deff = def_samples[sample_idx]
+            theta = None
+        else:
+            theta = theta_samples[sample_idx]
+            off = None
+            deff = None
+
         result = simulate_tournament_single(
-            bracket_struct, theta, sigma_val, team_id_to_idx, rng,
-            alpha_val=alpha_val,
+            bracket_struct, sigma_val, team_id_to_idx, rng,
+            theta=theta, off=off, deff=deff, alpha_val=alpha_val,
         )
 
         # Everyone in the tournament made Round of 64

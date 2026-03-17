@@ -14,27 +14,41 @@ def validate_season(
     draws: int = 1000,
     tune: int = 1000,
     chains: int = 4,
+    model_type: str = "bradley_terry",
 ) -> dict:
-    """Fit model on one season's regular season, predict that tournament."""
+    """Fit model on one season's regular season, predict that tournament.
+
+    Args:
+        model_type: "bradley_terry" or "offense_defense"
+    """
     label = "Men's" if gender == "M" else "Women's"
     print(f"\n{'='*60}")
-    print(f"Validating {label} season {season}")
+    print(f"Validating {label} season {season} ({model_type})")
     print(f"{'='*60}")
 
     data = build_model_data(season, gender)
-    model = build_bradley_terry(data)
+
+    if model_type == "offense_defense":
+        from src.model import build_offense_defense_model
+        model = build_offense_defense_model(data)
+    else:
+        model = build_bradley_terry(data)
+
     idata = fit_model(model, draws=draws, tune=tune, chains=chains)
 
-    theta = idata.posterior["theta"].values.reshape(-1, data["n_teams"])
     sigma = idata.posterior["sigma"].values.flatten()
+    team_id_to_idx = {tid: i for i, tid in enumerate(data["team_ids"])}
 
-    # Get tournament results
+    if model_type == "offense_defense":
+        off = idata.posterior["off"].values.reshape(-1, data["n_teams"])
+        deff = idata.posterior["def"].values.reshape(-1, data["n_teams"])
+    else:
+        theta = idata.posterior["theta"].values.reshape(-1, data["n_teams"])
+
     tourney = load_tournament_results([season], gender)
     if len(tourney) == 0:
         print(f"  No tournament results for {season}")
         return None
-
-    team_id_to_idx = {tid: i for i, tid in enumerate(data["team_ids"])}
 
     predictions = []
     for _, game in tourney.iterrows():
@@ -43,12 +57,14 @@ def validate_season(
         if w_idx is None or l_idx is None:
             continue
 
-        # P(winner wins) across posterior samples
-        diff = theta[:, w_idx] - theta[:, l_idx]
-        p_win = norm.cdf(diff / sigma).mean()
-        predictions.append({"predicted_p": p_win, "outcome": 1})
+        if model_type == "offense_defense":
+            diff = (off[:, w_idx] - deff[:, l_idx]) - (off[:, l_idx] - deff[:, w_idx])
+            p_win = norm.cdf(diff / (sigma * np.sqrt(2))).mean()
+        else:
+            diff = theta[:, w_idx] - theta[:, l_idx]
+            p_win = norm.cdf(diff / sigma).mean()
 
-        # Also add the loser's perspective for symmetry
+        predictions.append({"predicted_p": p_win, "outcome": 1})
         predictions.append({"predicted_p": 1 - p_win, "outcome": 0})
 
     return {
@@ -63,6 +79,7 @@ def run_validation(
     gender: str = "M",
     draws: int = 1000,
     tune: int = 1000,
+    model_type: str = "bradley_terry",
 ) -> dict:
     """Run validation across multiple historical seasons."""
     if seasons is None:
@@ -70,14 +87,16 @@ def run_validation(
             seasons = list(range(2015, 2026))
         else:
             seasons = list(range(2015, 2026))
-        # Skip 2020 (COVID cancellation)
         seasons = [s for s in seasons if s != 2020]
 
     all_predictions = []
     season_results = []
 
     for season in seasons:
-        result = validate_season(season, gender=gender, draws=draws, tune=tune)
+        result = validate_season(
+            season, gender=gender, draws=draws, tune=tune,
+            model_type=model_type,
+        )
         if result is not None:
             season_results.append(result)
             all_predictions.append(result["predictions"])
@@ -87,11 +106,9 @@ def run_validation(
 
     combined = pd.concat(all_predictions, ignore_index=True)
 
-    # Compute calibration metrics
     y = combined["outcome"].values
     p = combined["predicted_p"].values
     brier = np.mean((p - y) ** 2)
-    # Clip to avoid log(0)
     p_clipped = np.clip(p, 1e-15, 1 - 1e-15)
     logloss = -np.mean(y * np.log(p_clipped) + (1 - y) * np.log(1 - p_clipped))
 

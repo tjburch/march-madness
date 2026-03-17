@@ -161,6 +161,8 @@ def build_model_data(season: int = 2026, gender: str = "M") -> dict:
     team_idx_j_list = []
     margin_list = []
     home_i_list = []
+    score_i_list = []
+    score_j_list = []
 
     for _, g in rs.iterrows():
         w_id, l_id = g["WTeamID"], g["LTeamID"]
@@ -171,6 +173,7 @@ def build_model_data(season: int = 2026, gender: str = "M") -> dict:
         if w_id < l_id:
             ti, tj = w_id, l_id
             m = w_score - l_score
+            si, sj = w_score, l_score
             if loc == "H":
                 h = 1.0
             elif loc == "A":
@@ -180,6 +183,7 @@ def build_model_data(season: int = 2026, gender: str = "M") -> dict:
         else:
             ti, tj = l_id, w_id
             m = l_score - w_score
+            si, sj = l_score, w_score
             if loc == "H":
                 h = -1.0  # winner was home, but team_i is loser
             elif loc == "A":
@@ -191,11 +195,15 @@ def build_model_data(season: int = 2026, gender: str = "M") -> dict:
         team_idx_j_list.append(team_id_to_idx[tj])
         margin_list.append(m)
         home_i_list.append(h)
+        score_i_list.append(si)
+        score_j_list.append(sj)
 
     team_idx_i = np.array(team_idx_i_list)
     team_idx_j = np.array(team_idx_j_list)
     margin = np.array(margin_list, dtype=float)
     home_i = np.array(home_i_list)
+    score_i = np.array(score_i_list, dtype=float)
+    score_j = np.array(score_j_list, dtype=float)
 
     return {
         "team_ids": np.array(all_team_ids),
@@ -204,6 +212,8 @@ def build_model_data(season: int = 2026, gender: str = "M") -> dict:
         "team_idx_j": team_idx_j,
         "margin": margin,
         "home_i": home_i,
+        "score_i": score_i,
+        "score_j": score_j,
         "conf_idx": conf_idx,
         "conf_names": np.array(unique_confs),
         "n_teams": len(all_team_ids),
