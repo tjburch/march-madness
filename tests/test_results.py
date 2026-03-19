@@ -165,3 +165,128 @@ def test_fetch_espn_teams_parses_team_list(monkeypatch):
     assert teams[0]["id"] == 150
     assert teams[0]["displayName"] == "Duke Blue Devils"
     assert teams[1]["abbreviation"] == "HOU"
+
+
+def test_map_results_to_slots_play_in():
+    """Play-in game should map to the correct play-in slot."""
+    from src.results import map_results_to_slots
+
+    bracket_struct = {
+        "seed_to_team": {
+            "X16a": {"team_id": 1250, "team_name": "UMBC", "seed_num": 16},
+            "X16b": {"team_id": 1341, "team_name": "Howard", "seed_num": 16},
+            "X01": {"team_id": 1196, "team_name": "Florida", "seed_num": 1},
+        },
+        "play_in_slots": {
+            "X16": ("X16a", "X16b"),
+        },
+        "regular_slots": {
+            "R1X1": ("X01", "X16"),
+        },
+    }
+
+    games = [
+        {"winner_kaggle_id": 1250, "loser_kaggle_id": 1341,
+         "winner_score": 72, "loser_score": 65},
+    ]
+
+    result = map_results_to_slots(games, bracket_struct)
+
+    assert "X16" in result
+    assert result["X16"]["winner"] == 1250
+    assert result["X16"]["loser"] == 1341
+    assert result["X16"]["winner_score"] == 72
+    assert result["X16"]["loser_score"] == 65
+
+
+def test_map_results_to_slots_r1():
+    """R1 game with direct seeds should map correctly."""
+    from src.results import map_results_to_slots
+
+    bracket_struct = {
+        "seed_to_team": {
+            "W01": {"team_id": 1181, "team_name": "Duke", "seed_num": 1},
+            "W16": {"team_id": 1373, "team_name": "Norfolk St", "seed_num": 16},
+        },
+        "play_in_slots": {},
+        "regular_slots": {
+            "R1W1": ("W01", "W16"),
+        },
+    }
+
+    games = [
+        {"winner_kaggle_id": 1181, "loser_kaggle_id": 1373,
+         "winner_score": 85, "loser_score": 60},
+    ]
+
+    result = map_results_to_slots(games, bracket_struct)
+    assert "R1W1" in result
+    assert result["R1W1"]["winner"] == 1181
+
+
+def test_map_results_to_slots_r2_forward_resolution():
+    """R2 game should resolve via locked-in R1 winners."""
+    from src.results import map_results_to_slots
+
+    bracket_struct = {
+        "seed_to_team": {
+            "W01": {"team_id": 1181, "team_name": "Duke", "seed_num": 1},
+            "W16": {"team_id": 1373, "team_name": "Norfolk St", "seed_num": 16},
+            "W08": {"team_id": 1326, "team_name": "Mississippi St", "seed_num": 8},
+            "W09": {"team_id": 1395, "team_name": "TCU", "seed_num": 9},
+        },
+        "play_in_slots": {},
+        "regular_slots": {
+            "R1W1": ("W01", "W16"),
+            "R1W8": ("W08", "W09"),
+            "R2W1": ("R1W1", "R1W8"),
+        },
+    }
+
+    games = [
+        {"winner_kaggle_id": 1181, "loser_kaggle_id": 1373,
+         "winner_score": 85, "loser_score": 60},
+        {"winner_kaggle_id": 1395, "loser_kaggle_id": 1326,
+         "winner_score": 70, "loser_score": 65},
+        {"winner_kaggle_id": 1181, "loser_kaggle_id": 1395,
+         "winner_score": 78, "loser_score": 71},
+    ]
+
+    result = map_results_to_slots(games, bracket_struct)
+    assert "R1W1" in result
+    assert "R1W8" in result
+    assert "R2W1" in result
+    assert result["R2W1"]["winner"] == 1181
+    assert result["R2W1"]["loser"] == 1395
+
+
+def test_map_results_to_slots_play_in_feeds_r1():
+    """R1 game with a play-in feeder should resolve after play-in is locked."""
+    from src.results import map_results_to_slots
+
+    bracket_struct = {
+        "seed_to_team": {
+            "X16a": {"team_id": 1250, "team_name": "UMBC", "seed_num": 16},
+            "X16b": {"team_id": 1341, "team_name": "Howard", "seed_num": 16},
+            "X01": {"team_id": 1196, "team_name": "Florida", "seed_num": 1},
+        },
+        "play_in_slots": {
+            "X16": ("X16a", "X16b"),
+        },
+        "regular_slots": {
+            "R1X1": ("X01", "X16"),
+        },
+    }
+
+    games = [
+        {"winner_kaggle_id": 1250, "loser_kaggle_id": 1341,
+         "winner_score": 72, "loser_score": 65},
+        {"winner_kaggle_id": 1196, "loser_kaggle_id": 1250,
+         "winner_score": 90, "loser_score": 55},
+    ]
+
+    result = map_results_to_slots(games, bracket_struct)
+    assert "X16" in result
+    assert "R1X1" in result
+    assert result["R1X1"]["winner"] == 1196
+    assert result["R1X1"]["loser"] == 1250

@@ -161,6 +161,82 @@ def fetch_espn_results(gender: str, season: int = 2026) -> list[dict]:
     return games
 
 
+def map_results_to_slots(
+    games: list[dict],
+    bracket_struct: dict,
+) -> dict[str, dict]:
+    """Map completed games to bracket slots.
+
+    Args:
+        games: List of dicts with keys: winner_kaggle_id, loser_kaggle_id,
+            winner_score, loser_score.
+        bracket_struct: From build_bracket_structure().
+
+    Returns:
+        Dict mapping slot name to result dict with keys:
+        winner, loser, winner_score, loser_score.
+    """
+    seed_to_team = bracket_struct["seed_to_team"]
+    play_in_slots = bracket_struct.get("play_in_slots", {})
+    regular_slots = bracket_struct.get("regular_slots", {})
+
+    # resolved maps slot/seed names to team info dicts
+    resolved = dict(seed_to_team)
+
+    unmatched = list(games)
+    actual_results = {}
+
+    def _find_and_record(slot, team_a_id, team_b_id):
+        for i, g in enumerate(unmatched):
+            ids = {g["winner_kaggle_id"], g["loser_kaggle_id"]}
+            if ids == {team_a_id, team_b_id}:
+                actual_results[slot] = {
+                    "winner": g["winner_kaggle_id"],
+                    "loser": g["loser_kaggle_id"],
+                    "winner_score": g["winner_score"],
+                    "loser_score": g["loser_score"],
+                }
+                winner_id = g["winner_kaggle_id"]
+                # Find winner's team info and store under this slot
+                for s, info in resolved.items():
+                    if isinstance(info, dict) and info.get("team_id") == winner_id:
+                        resolved[slot] = info
+                        break
+                unmatched.pop(i)
+                return True
+        return False
+
+    # Phase 1: Play-in games
+    for slot, (strong, weak) in play_in_slots.items():
+        team_a = resolved.get(strong)
+        team_b = resolved.get(weak)
+        if team_a and team_b:
+            _find_and_record(slot, team_a["team_id"], team_b["team_id"])
+
+    # Phase 2: Regular slots sorted by round number
+    slot_order = sorted(
+        regular_slots.keys(),
+        key=lambda s: (int(s[1]), s),
+    )
+
+    for slot in slot_order:
+        strong, weak = regular_slots[slot]
+        team_a = resolved.get(strong)
+        team_b = resolved.get(weak)
+        if team_a is None or team_b is None:
+            continue
+        _find_and_record(slot, team_a["team_id"], team_b["team_id"])
+
+    for g in unmatched:
+        print(
+            f"Warning: Unmatched game result: "
+            f"{g['winner_kaggle_id']} beat {g['loser_kaggle_id']} "
+            f"({g['winner_score']}-{g['loser_score']})"
+        )
+
+    return actual_results
+
+
 def fetch_espn_teams(gender: str) -> list[dict]:
     """Fetch ESPN team directory for the given gender.
 
