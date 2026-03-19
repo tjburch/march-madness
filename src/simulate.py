@@ -91,6 +91,7 @@ def simulate_tournament_single(
     off: np.ndarray | None = None,
     deff: np.ndarray | None = None,
     alpha_val: float = 0.0,
+    actual_results: dict | None = None,
 ) -> dict:
     """Simulate one complete tournament bracket.
 
@@ -119,12 +120,19 @@ def simulate_tournament_single(
     # resolved maps a name (seed or slot) to the team occupying it
     resolved = dict(seed_to_team)
 
+    slot_winners = {}
+
     # Resolve play-in games first
     for slot, (strong, weak) in play_in_slots.items():
         team_a = resolved[strong]
         team_b = resolved[weak]
-        winner = _play_game(team_a, team_b, **game_kwargs)
+        if actual_results and slot in actual_results:
+            winner_id = actual_results[slot]["winner"]
+            winner = team_a if team_a["team_id"] == winner_id else team_b
+        else:
+            winner = _play_game(team_a, team_b, **game_kwargs)
         resolved[slot] = winner
+        slot_winners[slot] = winner
 
     # Process regular slots in round order
     slot_order = sorted(
@@ -132,7 +140,6 @@ def simulate_tournament_single(
         key=lambda s: (int(s[1]), s),
     )
 
-    slot_winners = {}
     round_results = {}
 
     for slot in slot_order:
@@ -157,10 +164,14 @@ def simulate_tournament_single(
                     home_advantage = alpha_val
                     home_team_id = team_b["team_id"]
 
-        winner = _play_game(
-            team_a, team_b, **game_kwargs,
-            home_advantage=home_advantage, home_team_id=home_team_id,
-        )
+        if actual_results and slot in actual_results:
+            winner_id = actual_results[slot]["winner"]
+            winner = team_a if team_a["team_id"] == winner_id else team_b
+        else:
+            winner = _play_game(
+                team_a, team_b, **game_kwargs,
+                home_advantage=home_advantage, home_team_id=home_team_id,
+            )
         resolved[slot] = winner
         slot_winners[slot] = winner
 
@@ -186,6 +197,7 @@ def simulate_tournament(
     off_samples: np.ndarray | None = None,
     def_samples: np.ndarray | None = None,
     alpha_samples: np.ndarray | None = None,
+    actual_results: dict | None = None,
 ) -> dict:
     """Run full tournament simulation across posterior samples.
 
@@ -235,6 +247,7 @@ def simulate_tournament(
         result = simulate_tournament_single(
             bracket_struct, sigma_val, team_id_to_idx, rng,
             theta=theta, off=off, deff=deff, alpha_val=alpha_val,
+            actual_results=actual_results,
         )
 
         # Everyone in the tournament made Round of 64
