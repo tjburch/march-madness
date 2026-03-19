@@ -180,6 +180,7 @@ def _build_bracket_section(sim_results: dict, bracket_struct: dict, actual_resul
 
     play_in_slots = bracket_struct.get("play_in_slots", {})
     play_in_resolved = {}
+    bracket = {}
     for pi_slot, (pi_strong, pi_weak) in play_in_slots.items():
         team_a = seed_to_team.get(pi_strong)
         team_b = seed_to_team.get(pi_weak)
@@ -191,10 +192,20 @@ def _build_bracket_section(sim_results: dict, bracket_struct: dict, actual_resul
             else:
                 play_in_resolved[pi_slot] = team_a
 
+            counts = slot_winner_counts.get(pi_slot, {})
+            a_wins = counts.get(team_a["team_id"], 0)
+            p_a = round(a_wins / n_sims, 4) if n_sims > 0 else 0.5
+
+            bracket[pi_slot] = {
+                "team_a": {"id": team_a["team_id"], "name": team_a["team_name"], "seed_num": team_a["seed_num"]},
+                "team_b": {"id": team_b["team_id"], "name": team_b["team_name"], "seed_num": team_b["seed_num"]},
+                "p_a_wins": p_a,
+                "result": actual_results.get(pi_slot),
+                "play_in": True,
+            }
+
     def _resolve(name):
         return seed_to_team.get(name) or play_in_resolved.get(name)
-
-    bracket = {}
     for slot, (strong, weak) in sorted(regular_slots.items()):
         if not slot.startswith("R1"):
             continue
