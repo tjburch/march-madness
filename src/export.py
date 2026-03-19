@@ -184,7 +184,12 @@ def _build_bracket_section(sim_results: dict, bracket_struct: dict, actual_resul
         team_a = seed_to_team.get(pi_strong)
         team_b = seed_to_team.get(pi_weak)
         if team_a and team_b:
-            play_in_resolved[pi_slot] = team_a
+            pi_result = actual_results.get(pi_slot)
+            if pi_result and "winner" in pi_result:
+                winner_id = pi_result["winner"]
+                play_in_resolved[pi_slot] = team_a if team_a["team_id"] == winner_id else team_b
+            else:
+                play_in_resolved[pi_slot] = team_a
 
     def _resolve(name):
         return seed_to_team.get(name) or play_in_resolved.get(name)
