@@ -2,7 +2,7 @@
 
 import json
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from src.data import load_seeds
 from src.simulate import build_bracket_structure
@@ -115,7 +115,7 @@ def fetch_espn_results(gender: str, season: int = 2026) -> list[dict]:
         return []
 
     sport = _espn_sport_path(gender)
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
     games = []
     seen_ids = set()
 
