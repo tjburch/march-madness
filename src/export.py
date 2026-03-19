@@ -149,24 +149,19 @@ def _mark_eliminated(teams: dict, actual_results: dict, bracket_struct: dict):
         1: "Round of 64", 2: "Round of 32", 3: "Sweet 16",
         4: "Elite Eight", 5: "Final Four", 6: "Championship",
     }
-    seed_to_team = bracket_struct["seed_to_team"]
-    regular_slots = bracket_struct["regular_slots"]
-
     for slot, result in actual_results.items():
-        if not result or "winner" not in result:
+        if not result or "loser" not in result:
             continue
-        winner_id = result["winner"]
-        if slot in regular_slots:
-            strong, weak = regular_slots[slot]
-            team_a = seed_to_team.get(strong)
-            team_b = seed_to_team.get(weak)
-            if team_a and team_b:
-                loser_id = team_b["team_id"] if winner_id == team_a["team_id"] else team_a["team_id"]
-                loser_key = str(loser_id)
-                if loser_key in teams:
-                    round_num = int(slot[1]) if slot[0] == "R" and slot[1].isdigit() else 0
-                    teams[loser_key]["eliminated"] = True
-                    teams[loser_key]["eliminated_round"] = round_name_map.get(round_num)
+        loser_key = str(result["loser"])
+        if loser_key in teams:
+            if slot[0] == "R" and slot[1].isdigit():
+                round_num = int(slot[1])
+            else:
+                round_num = 0
+            teams[loser_key]["eliminated"] = True
+            teams[loser_key]["eliminated_round"] = round_name_map.get(
+                round_num, "First Four"
+            )
 
 
 def _build_bracket_section(sim_results: dict, bracket_struct: dict, actual_results: dict) -> dict:
