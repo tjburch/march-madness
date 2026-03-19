@@ -70,6 +70,7 @@ jobs:
           from src.model import build_offense_defense_model, fit_model, get_team_strengths
           from src.simulate import build_bracket_structure, simulate_tournament
           from src.export import export_snapshot, export_odds_timeline
+          from src.results import fetch_tournament_results
 
           SITE_DATA = Path('site_data')
           TODAY = '${TODAY}'
@@ -88,12 +89,16 @@ jobs:
               alpha = idata.posterior['alpha'].values.flatten()
 
               bracket = build_bracket_structure(2026, gender)
+              actual_results = fetch_tournament_results(2026, gender)
+              print(f'  Found {len(actual_results)} completed tournament games')
+
               sim = simulate_tournament(
                   bracket, sigma_samples=sigma,
                   team_ids=data['team_ids'], n_sims=10000, seed=42,
                   off_samples=strengths['off_samples'],
                   def_samples=strengths['def_samples'],
                   alpha_samples=alpha if gender == 'W' else None,
+                  actual_results=actual_results,
               )
 
               export_snapshot(
@@ -107,6 +112,7 @@ jobs:
                   idata=idata,
                   off_samples=strengths['off_samples'],
                   def_samples=strengths['def_samples'],
+                  actual_results=actual_results,
               )
 
               export_odds_timeline(
@@ -114,7 +120,7 @@ jobs:
                   gender_dir / 'odds_timeline.json',
               )
 
-              del idata, strengths, sigma, alpha, sim
+              del idata, strengths, sigma, alpha, sim, actual_results
               gc.collect()
               print(f'  {suffix} complete.')
 
