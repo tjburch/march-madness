@@ -34,6 +34,9 @@ NAME_OVERRIDES = {
     "N Dakota St": "north dakota state bison",
     "Cal Baptist": "california baptist lancers",
     "UT San Antonio": "utsa roadrunners",
+    "St Louis": "saint louis billikens",
+    "Queens NC": "queens university royals",
+    "LIU Brooklyn": "long island university sharks",
 }
 
 # Tournament start dates by (season, gender)
