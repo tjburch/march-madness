@@ -290,3 +290,87 @@ def test_map_results_to_slots_play_in_feeds_r1():
     assert "R1X1" in result
     assert result["R1X1"]["winner"] == 1196
     assert result["R1X1"]["loser"] == 1250
+
+
+def test_fetch_tournament_results_end_to_end(monkeypatch):
+    """Full pipeline: ESPN fetch -> ID mapping -> slot resolution."""
+    from src.results import fetch_tournament_results
+    import json
+    import pandas as pd
+
+    # Mock load_seeds and build_bracket_structure to avoid Kaggle data dependency
+    fake_seeds = pd.DataFrame({
+        "TeamID": [1250, 1341, 1196],
+        "TeamName": ["UMBC", "Howard", "Florida"],
+        "Seed": ["X16a", "X16b", "X01"],
+        "SeedNum": [16, 16, 1],
+        "Region": ["X", "X", "X"],
+        "PlayIn": ["a", "b", ""],
+    })
+
+    fake_bracket = {
+        "seed_to_team": {
+            "X16a": {"team_id": 1250, "team_name": "UMBC", "seed_num": 16},
+            "X16b": {"team_id": 1341, "team_name": "Howard", "seed_num": 16},
+            "X01": {"team_id": 1196, "team_name": "Florida", "seed_num": 1},
+        },
+        "play_in_slots": {"X16": ("X16a", "X16b")},
+        "regular_slots": {"R1X1": ("X01", "X16")},
+        "seeds_df": fake_seeds,
+        "gender": "M",
+    }
+
+    monkeypatch.setattr("src.results.load_seeds", lambda s, g: fake_seeds)
+    monkeypatch.setattr(
+        "src.results.build_bracket_structure", lambda s, g: fake_bracket
+    )
+
+    # Mock ESPN teams API
+    espn_teams_response = {
+        "sports": [{"leagues": [{"teams": [
+            {"team": {"id": "999901", "displayName": "UMBC Retrievers",
+                      "shortDisplayName": "UMBC", "abbreviation": "UMBC"}},
+            {"team": {"id": "999902", "displayName": "Howard Bison",
+                      "shortDisplayName": "Howard", "abbreviation": "HOW"}},
+        ]}]}]
+    }
+
+    # Mock scoreboard API — one completed play-in game
+    scoreboard_response = {
+        "events": [{
+            "id": "12345",
+            "competitions": [{"competitors": [
+                {"id": "999901", "winner": True,
+                 "team": {"id": "999901", "displayName": "UMBC Retrievers"},
+                 "score": "72"},
+                {"id": "999902", "winner": False,
+                 "team": {"id": "999902", "displayName": "Howard Bison"},
+                 "score": "65"},
+            ]}],
+            "status": {"type": {"completed": True}},
+        }]
+    }
+
+    class FakeResponse:
+        def __init__(self, data):
+            self._data = data
+        def read(self):
+            return json.dumps(self._data).encode()
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            pass
+
+    def mock_urlopen(req, **kw):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "teams" in url:
+            return FakeResponse(espn_teams_response)
+        return FakeResponse(scoreboard_response)
+
+    monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
+
+    result = fetch_tournament_results(2026, "M")
+
+    assert "X16" in result
+    assert result["X16"]["winner"] == 1250
+    assert result["X16"]["loser"] == 1341

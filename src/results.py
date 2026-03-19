@@ -4,6 +4,9 @@ import json
 import urllib.request
 from datetime import date, timedelta
 
+from src.data import load_seeds
+from src.simulate import build_bracket_structure
+
 
 # Kaggle name -> ESPN full name, same direction as export.py's name_overrides.
 # Only needed for names that don't match via normalized substring.
@@ -235,6 +238,70 @@ def map_results_to_slots(
         )
 
     return actual_results
+
+
+def fetch_tournament_results(season: int, gender: str) -> dict:
+    """Fetch actual tournament results and map to bracket slots.
+
+    Returns dict mapping slot name to result dict, compatible with
+    export_snapshot's actual_results parameter.
+
+    Returns empty dict on failure (equivalent to no results known).
+    """
+    try:
+        seeds_df = load_seeds(season, gender)
+        espn_teams = fetch_espn_teams(gender)
+        espn_to_kaggle = build_espn_to_kaggle_map(seeds_df, espn_teams)
+
+        if not espn_to_kaggle:
+            print("Warning: ESPN-to-Kaggle mapping is empty, cannot resolve results")
+            return {}
+
+        espn_games = fetch_espn_results(gender, season)
+        if not espn_games:
+            return {}
+
+        # Convert ESPN IDs to Kaggle IDs
+        mapped_games = []
+        for g in espn_games:
+            winner_kaggle = espn_to_kaggle.get(g["winner_espn_id"])
+            loser_espn = (
+                g["team_b_espn_id"]
+                if g["winner_espn_id"] == g["team_a_espn_id"]
+                else g["team_a_espn_id"]
+            )
+            loser_kaggle = espn_to_kaggle.get(loser_espn)
+
+            if winner_kaggle is None or loser_kaggle is None:
+                print(
+                    f"Warning: Could not map ESPN game {g['espn_game_id']} "
+                    f"to Kaggle IDs (winner ESPN {g['winner_espn_id']}, "
+                    f"loser ESPN {loser_espn})"
+                )
+                continue
+
+            winner_score = (
+                g["score_a"] if g["winner_espn_id"] == g["team_a_espn_id"]
+                else g["score_b"]
+            )
+            loser_score = (
+                g["score_b"] if g["winner_espn_id"] == g["team_a_espn_id"]
+                else g["score_a"]
+            )
+
+            mapped_games.append({
+                "winner_kaggle_id": winner_kaggle,
+                "loser_kaggle_id": loser_kaggle,
+                "winner_score": winner_score,
+                "loser_score": loser_score,
+            })
+
+        bracket_struct = build_bracket_structure(season, gender)
+        return map_results_to_slots(mapped_games, bracket_struct)
+
+    except Exception as e:
+        print(f"Warning: Failed to fetch tournament results: {e}")
+        return {}
 
 
 def fetch_espn_teams(gender: str) -> list[dict]:
