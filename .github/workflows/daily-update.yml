@@ -7,6 +7,10 @@ on:
     - cron: "0 13 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: tournament-update
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -131,14 +135,16 @@ jobs:
         if: steps.check-window.outputs.skip != 'true'
         run: |
           TODAY=$(date -u +%Y-%m-%d)
+          NOW_UTC=$(date -u +%Y-%m-%dT%H%MZ)
 
           # Copy new data to site repo
           for GENDER in mens womens; do
             DEST="site_repo/assets/data/march-madness-2026/${GENDER}"
-            mkdir -p "${DEST}/snapshots"
+            mkdir -p "${DEST}/snapshots" "${DEST}/archive"
             cp "site_data/${GENDER}/snapshots/${TODAY}.json" "${DEST}/snapshots/"
             cp "site_data/${GENDER}/latest.json" "${DEST}/"
             cp "site_data/${GENDER}/odds_timeline.json" "${DEST}/"
+            cp "site_data/${GENDER}/latest.json" "${DEST}/archive/${NOW_UTC}.json"
           done
 
           cd site_repo
@@ -149,5 +155,6 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "Update March Madness dashboard data for ${TODAY}"
+            git pull --rebase origin main 2>/dev/null || true
             git push
           fi

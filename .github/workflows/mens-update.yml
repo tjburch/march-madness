@@ -1,0 +1,154 @@
+name: "Men's Session Update"
+# Runs after each men's tournament session — fits model for men only
+
+on:
+  schedule:
+    # First Four
+    - cron: "45 0 18 3 *"   # Mar 17 games — 12:45 AM UTC Mar 18
+    - cron: "45 0 19 3 *"   # Mar 18 games — 12:45 AM UTC Mar 19
+    # Round of 64
+    - cron: "45 0 20 3 *"   # Mar 19 games — 12:45 AM UTC Mar 20
+    - cron: "45 0 21 3 *"   # Mar 20 games — 12:45 AM UTC Mar 21
+    # Round of 32
+    - cron: "45 0 22 3 *"   # Mar 21 games — 12:45 AM UTC Mar 22
+    - cron: "45 0 23 3 *"   # Mar 22 games — 12:45 AM UTC Mar 23
+    # Sweet 16
+    - cron: "45 0 27 3 *"   # Mar 26 games — 12:45 AM UTC Mar 27
+    - cron: "45 0 28 3 *"   # Mar 27 games — 12:45 AM UTC Mar 28
+    # Elite 8
+    - cron: "45 0 29 3 *"   # Mar 28 games — 12:45 AM UTC Mar 29
+    - cron: "45 0 30 3 *"   # Mar 29 games — 12:45 AM UTC Mar 30
+    # Final Four
+    - cron: "30 3 5 4 *"    # Apr 4 games — 3:30 AM UTC Apr 5
+    # Championship
+    - cron: "30 3 7 4 *"    # Apr 6 game  — 3:30 AM UTC Apr 7
+  workflow_dispatch:
+
+concurrency:
+  group: tournament-update
+  cancel-in-progress: false
+
+jobs:
+  update-mens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Year guard
+        id: check-year
+        run: |
+          YEAR=$(date -u +%Y)
+          if [[ "$YEAR" != "2026" ]]; then
+            echo "Not 2026 ($YEAR). Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout march_madness
+        if: steps.check-year.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.check-year.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        if: steps.check-year.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        if: steps.check-year.outputs.skip != 'true'
+        run: uv sync
+
+      - name: Clone site repo for existing snapshots
+        if: steps.check-year.outputs.skip != 'true'
+        env:
+          SITE_REPO_TOKEN: ${{ secrets.SITE_REPO_TOKEN }}
+        run: |
+          git clone https://x-access-token:${SITE_REPO_TOKEN}@github.com/tjburch/tjburch.github.io.git site_repo
+          SRC="site_repo/assets/data/march-madness-2026/mens/snapshots"
+          DEST="site_data/mens/snapshots"
+          mkdir -p "${DEST}"
+          if [ -d "${SRC}" ]; then
+            cp "${SRC}"/*.json "${DEST}/" 2>/dev/null || true
+          fi
+
+      - name: Fit model and export
+        if: steps.check-year.outputs.skip != 'true'
+        run: |
+          NOW_UTC=$(date -u +%Y-%m-%dT%H%MZ)
+          uv run python -c "
+          from pathlib import Path
+          from src.data import build_model_data
+          from src.model import build_offense_defense_model, fit_model, get_team_strengths
+          from src.simulate import build_bracket_structure, simulate_tournament
+          from src.export import export_snapshot
+          from src.results import fetch_tournament_results
+
+          SITE_DATA = Path('site_data')
+          NOW_UTC = '${NOW_UTC}'
+          gender_dir = SITE_DATA / 'mens'
+
+          print('Processing mens...')
+          data = build_model_data(2026, 'M')
+          model = build_offense_defense_model(data)
+          idata = fit_model(model, draws=1000, tune=1000, chains=2)
+
+          strengths = get_team_strengths(idata, data)
+          sigma = idata.posterior['sigma'].values.flatten()
+          alpha = idata.posterior['alpha'].values.flatten()
+
+          bracket = build_bracket_structure(2026, 'M')
+          actual_results = fetch_tournament_results(2026, 'M')
+          print(f'  Found {len(actual_results)} completed tournament games')
+
+          sim = simulate_tournament(
+              bracket, sigma_samples=sigma,
+              team_ids=data['team_ids'], n_sims=10000, seed=42,
+              off_samples=strengths['off_samples'],
+              def_samples=strengths['def_samples'],
+              actual_results=actual_results,
+          )
+
+          export_snapshot(
+              data=data,
+              sigma_samples=sigma,
+              sim_results=sim,
+              bracket_struct=bracket,
+              date=NOW_UTC[:10],
+              output_dir=gender_dir,
+              alpha_samples=alpha,
+              idata=idata,
+              off_samples=strengths['off_samples'],
+              def_samples=strengths['def_samples'],
+              actual_results=actual_results,
+          )
+
+          print('  mens complete.')
+          "
+
+      - name: Push to site repo
+        if: steps.check-year.outputs.skip != 'true'
+        run: |
+          NOW_UTC=$(date -u +%Y-%m-%dT%H%MZ)
+          DEST="site_repo/assets/data/march-madness-2026/mens"
+
+          # Session trigger: update latest.json and archive only
+          mkdir -p "${DEST}/archive"
+          cp "site_data/mens/latest.json" "${DEST}/latest.json"
+          cp "site_data/mens/latest.json" "${DEST}/archive/${NOW_UTC}.json"
+
+          cd site_repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/data/march-madness-2026/mens/
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Update mens tournament data (session) ${NOW_UTC}"
+            git pull --rebase origin main 2>/dev/null || true
+            git push
+          fi
