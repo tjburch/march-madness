@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: tournament-update
+  group: tournament-update-womens
   cancel-in-progress: false
 
 jobs:

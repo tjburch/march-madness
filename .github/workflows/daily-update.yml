@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: tournament-update
+  group: tournament-update-daily
   cancel-in-progress: false
 
 jobs:
