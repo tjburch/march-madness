@@ -11,6 +11,8 @@ from src.simulate import build_bracket_structure
 # Kaggle name -> ESPN full name, same direction as export.py's name_overrides.
 # Only needed for names that don't match via normalized substring.
 NAME_OVERRIDES = {
+    "Connecticut": "uconn huskies",
+    "Mississippi": "ole miss rebels",
     "St John's": "st. john's red storm",
     "St Mary's CA": "saint mary's gaels",
     "NC State": "nc state wolfpack",
@@ -39,10 +41,16 @@ NAME_OVERRIDES = {
     "LIU Brooklyn": "long island university sharks",
 }
 
+# Teams missing from ESPN's /teams directory (newer D1 programs, etc.)
+# Maps Kaggle TeamName -> ESPN team ID directly.
+_MANUAL_ESPN_IDS = {
+    "Queens NC": 2511,
+}
+
 # Tournament start dates by (season, gender)
 _TOURNAMENT_START = {
     (2026, "M"): date(2026, 3, 17),
-    (2026, "W"): date(2026, 3, 19),
+    (2026, "W"): date(2026, 3, 18),
 }
 
 
@@ -92,6 +100,10 @@ def build_espn_to_kaggle_map(
                 if kaggle_name.lower() in espn_name:
                     espn_id = eid
                     break
+
+        # Fallback: manual ESPN ID for teams missing from directory
+        if espn_id is None:
+            espn_id = _MANUAL_ESPN_IDS.get(kaggle_name)
 
         if espn_id is not None:
             mapping[espn_id] = kaggle_id
