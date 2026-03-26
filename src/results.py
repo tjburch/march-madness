@@ -1,50 +1,23 @@
 """Fetch actual tournament results from ESPN and map to bracket slots."""
 
+import csv
 import json
+import re
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from src.data import load_seeds
 from src.simulate import build_bracket_structure
 
-
-# Kaggle name -> ESPN full name, same direction as export.py's name_overrides.
-# Only needed for names that don't match via normalized substring.
-NAME_OVERRIDES = {
-    "Connecticut": "uconn huskies",
-    "Mississippi": "ole miss rebels",
-    "St John's": "st. john's red storm",
-    "St Mary's CA": "saint mary's gaels",
-    "NC State": "nc state wolfpack",
-    "Michigan St": "michigan state spartans",
-    "Iowa St": "iowa state cyclones",
-    "Ohio St": "ohio state buckeyes",
-    "Texas Tech": "texas tech red raiders",
-    "Texas A&M": "texas a&m aggies",
-    "Utah St": "utah state aggies",
-    "McNeese St": "mcneese cowboys",
-    "Tennessee St": "tennessee state tigers",
-    "Miami FL": "miami hurricanes",
-    "Col Charleston": "charleston cougars",
-    "South Florida": "south florida bulls",
-    "Notre Dame": "notre dame fighting irish",
-    "West Virginia": "west virginia mountaineers",
-    "Hawaii": "hawai'i rainbow warriors",
-    "Southern Univ": "southern jaguars",
-    "F Dickinson": "fairleigh dickinson knights",
-    "WI Green Bay": "green bay phoenix",
-    "N Dakota St": "north dakota state bison",
-    "Cal Baptist": "california baptist lancers",
-    "UT San Antonio": "utsa roadrunners",
-    "St Louis": "saint louis billikens",
-    "Queens NC": "queens university royals",
-    "LIU Brooklyn": "long island university sharks",
-}
+KAGGLE_DIR = Path("data/kaggle")
 
 # Teams missing from ESPN's /teams directory (newer D1 programs, etc.)
-# Maps Kaggle TeamName -> ESPN team ID directly.
+# Maps Kaggle TeamID -> ESPN team ID directly.
 _MANUAL_ESPN_IDS = {
-    "Queens NC": 2511,
+    1274: 2390,   # Miami FL (ESPN "Miami" is ambiguous with Miami OH)
+    1474: 2511,   # Queens NC (not in ESPN team directory)
+    3474: 2511,   # Queens NC (women's)
 }
 
 # Tournament start dates by (season, gender)
@@ -58,59 +31,97 @@ def _espn_sport_path(gender: str) -> str:
     return "mens-college-basketball" if gender == "M" else "womens-college-basketball"
 
 
+def _load_spellings(gender: str) -> dict[str, int]:
+    """Load Kaggle team spellings file as normalized_name -> TeamID lookup."""
+    prefix = "M" if gender == "M" else "W"
+    path = KAGGLE_DIR / f"{prefix}TeamSpellings.csv"
+    lookup = {}
+    with open(path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            lookup[row["TeamNameSpelling"].lower().strip()] = int(row["TeamID"])
+    return lookup
+
+
+# Regex to strip common mascot/nickname suffixes from ESPN display names.
+_MASCOT_RE = re.compile(
+    r"\s+(?:blue devils|red storm|red raiders|fighting irish|yellow jackets"
+    r"|golden eagles|mountaineers|cornhuskers|wolverines|spartans"
+    r"|cyclones|hurricanes|hoosiers|hawkeyes|boilermakers|bulldogs"
+    r"|wildcats|huskies|bears|tigers|eagles|hawks|panthers|cavaliers"
+    r"|knights|warriors|cougars|rebels|aggies|longhorns|cowboys"
+    r"|cardinals|owls|lancers|roadrunners|gaels|billikens|jaguars"
+    r"|phoenix|sharks|bison|royals|terrapins|gators|seminoles"
+    r"|wolfpack|volunteers|crimson tide|demon deacons|tar heels"
+    r"|jayhawks|sooners|pirates|musketeers|friars|flyers|dons"
+    r"|shockers|commodores|deacons|orange|buckeyes|nittany lions"
+    r"|red raiders|redhawks|devilettes|lady bears|ladyjacks"
+    r"|ragin cajuns|ramblers|bearcats|braves|rams|salukis"
+    r"|spiders|colonials|monarchs|dukes|paladins|terriers"
+    r"|[\w]+)$",
+    re.IGNORECASE,
+)
+
+
 def build_espn_to_kaggle_map(
     seeds_df,
     espn_teams: list[dict],
+    gender: str = "M",
 ) -> dict[int, int]:
     """Build ESPN team ID -> Kaggle TeamID mapping for tournament teams.
+
+    Uses the Kaggle TeamSpellings file for robust name matching instead of
+    fragile substring matching.
 
     Args:
         seeds_df: DataFrame with TeamID, TeamName columns (from load_seeds).
         espn_teams: List of ESPN team dicts with keys: id, displayName,
             shortDisplayName, abbreviation.
+        gender: "M" or "W" to select the correct spellings file.
 
     Returns:
         Dict mapping ESPN team ID (int) to Kaggle TeamID (int).
     """
-    # Build ESPN lookup: normalized name -> ESPN ID
-    espn_lookup = {}
+    spellings = _load_spellings(gender)
+    tournament_ids = set(seeds_df["TeamID"].astype(int))
+
+    # For each ESPN team, try to resolve a Kaggle ID via spellings
+    espn_id_to_kaggle = {}
     for team in espn_teams:
         espn_id = int(team["id"])
-        for key in ["displayName", "shortDisplayName", "abbreviation"]:
-            name = team.get(key, "")
-            if name:
-                espn_lookup[name.lower().strip()] = espn_id
 
-    mapping = {}
-    for _, row in seeds_df.iterrows():
-        kaggle_id = int(row["TeamID"])
-        kaggle_name = row["TeamName"]
+        # Try each ESPN name variant against spellings
+        for key in ["shortDisplayName", "displayName", "abbreviation"]:
+            name = team.get(key, "").lower().strip()
+            if not name:
+                continue
 
-        # Try override first
-        override = NAME_OVERRIDES.get(kaggle_name, "").lower()
-        espn_id = espn_lookup.get(override)
+            kaggle_id = spellings.get(name)
+            if kaggle_id and kaggle_id in tournament_ids:
+                espn_id_to_kaggle[espn_id] = kaggle_id
+                break
 
-        # Try exact lowercase match
-        if espn_id is None:
-            espn_id = espn_lookup.get(kaggle_name.lower())
-
-        # Try substring: Kaggle name contained in ESPN name
-        if espn_id is None:
-            for espn_name, eid in espn_lookup.items():
-                if kaggle_name.lower() in espn_name:
-                    espn_id = eid
+            # Strip mascot suffix and retry
+            stripped = _MASCOT_RE.sub("", name).strip()
+            if stripped and stripped != name:
+                kaggle_id = spellings.get(stripped)
+                if kaggle_id and kaggle_id in tournament_ids:
+                    espn_id_to_kaggle[espn_id] = kaggle_id
                     break
 
-        # Fallback: manual ESPN ID for teams missing from directory
-        if espn_id is None:
-            espn_id = _MANUAL_ESPN_IDS.get(kaggle_name)
+    # Add manual ESPN IDs for teams not in ESPN's directory
+    for kaggle_id, espn_id in _MANUAL_ESPN_IDS.items():
+        if kaggle_id in tournament_ids:
+            espn_id_to_kaggle[espn_id] = kaggle_id
 
-        if espn_id is not None:
-            mapping[espn_id] = kaggle_id
-        else:
-            print(f"Warning: No ESPN match for {kaggle_name} (Kaggle ID {kaggle_id})")
+    # Report any tournament teams that couldn't be mapped
+    mapped_kaggle = set(espn_id_to_kaggle.values())
+    for _, row in seeds_df.iterrows():
+        kaggle_id = int(row["TeamID"])
+        if kaggle_id not in mapped_kaggle:
+            print(f"Warning: No ESPN match for {row['TeamName']} (Kaggle ID {kaggle_id})")
 
-    return mapping
+    return espn_id_to_kaggle
 
 
 def fetch_espn_results(gender: str, season: int = 2026) -> list[dict]:
@@ -266,7 +277,7 @@ def fetch_tournament_results(season: int, gender: str) -> dict:
     try:
         seeds_df = load_seeds(season, gender)
         espn_teams = fetch_espn_teams(gender)
-        espn_to_kaggle = build_espn_to_kaggle_map(seeds_df, espn_teams)
+        espn_to_kaggle = build_espn_to_kaggle_map(seeds_df, espn_teams, gender)
 
         if not espn_to_kaggle:
             print("Warning: ESPN-to-Kaggle mapping is empty, cannot resolve results")

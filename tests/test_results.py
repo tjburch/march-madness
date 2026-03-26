@@ -4,49 +4,39 @@ import pytest
 
 
 def test_build_espn_to_kaggle_map_matches_known_teams():
-    """Mapping should resolve ESPN team entries to Kaggle TeamIDs by name."""
+    """Mapping should resolve ESPN team entries to Kaggle TeamIDs via spellings."""
     from src.results import build_espn_to_kaggle_map
-    import pandas as pd
+    from src.data import load_seeds
 
-    seeds_df = pd.DataFrame({
-        "TeamID": [1181, 1242, 1301],
-        "TeamName": ["Duke", "Houston", "Michigan St"],
-        "Seed": ["W01", "W04", "Z11a"],
-        "SeedNum": [1, 4, 11],
-        "Region": ["W", "W", "Z"],
-    })
+    seeds_df = load_seeds(2026, "M")
 
     espn_teams = [
         {"id": 150, "displayName": "Duke Blue Devils", "shortDisplayName": "Duke", "abbreviation": "DUKE"},
         {"id": 248, "displayName": "Houston Cougars", "shortDisplayName": "Houston", "abbreviation": "HOU"},
-        {"id": 127, "displayName": "Michigan State Spartans", "shortDisplayName": "Michigan State", "abbreviation": "MSU"},
+        {"id": 127, "displayName": "Michigan State Spartans", "shortDisplayName": "Michigan St", "abbreviation": "MSU"},
+        {"id": 41, "displayName": "UConn Huskies", "shortDisplayName": "UConn", "abbreviation": "CONN"},
+        {"id": 145, "displayName": "Ole Miss Rebels", "shortDisplayName": "Ole Miss", "abbreviation": "MISS"},
     ]
 
-    result = build_espn_to_kaggle_map(seeds_df, espn_teams)
+    result = build_espn_to_kaggle_map(seeds_df, espn_teams, "M")
 
     assert result[150] == 1181  # Duke
-    assert result[248] == 1242  # Houston
-    assert result[127] == 1301  # Michigan St -> Michigan State
+    assert result[248] == 1222  # Houston
+    assert result[127] == 1277  # Michigan St
+    assert result[41] == 1163   # Connecticut / UConn
 
 
 def test_build_espn_to_kaggle_map_warns_on_unmatched(capsys):
     """Unmatched tournament teams should produce warnings."""
     from src.results import build_espn_to_kaggle_map
-    import pandas as pd
+    from src.data import load_seeds
 
-    seeds_df = pd.DataFrame({
-        "TeamID": [9999],
-        "TeamName": ["Nonexistent U"],
-        "Seed": ["W01"],
-        "SeedNum": [1],
-        "Region": ["W"],
-    })
-    espn_teams = []
-
-    result = build_espn_to_kaggle_map(seeds_df, espn_teams)
+    seeds_df = load_seeds(2026, "M")
+    # Empty ESPN teams — nothing will match
+    result = build_espn_to_kaggle_map(seeds_df, [], "M")
     captured = capsys.readouterr()
-    assert "Nonexistent U" in captured.out
-    assert len(result) == 0
+    # Should warn about all tournament teams
+    assert "Warning" in captured.out
 
 
 def test_fetch_espn_results_parses_completed_games(monkeypatch):
@@ -298,7 +288,6 @@ def test_fetch_tournament_results_end_to_end(monkeypatch):
     import json
     import pandas as pd
 
-    # Mock load_seeds and build_bracket_structure to avoid Kaggle data dependency
     fake_seeds = pd.DataFrame({
         "TeamID": [1250, 1341, 1196],
         "TeamName": ["UMBC", "Howard", "Florida"],
@@ -324,8 +313,12 @@ def test_fetch_tournament_results_end_to_end(monkeypatch):
     monkeypatch.setattr(
         "src.results.build_bracket_structure", lambda s, g: fake_bracket
     )
+    # Mock spellings to map fake team names
+    monkeypatch.setattr(
+        "src.results._load_spellings",
+        lambda g: {"umbc": 1250, "howard": 1341, "florida": 1196},
+    )
 
-    # Mock ESPN teams API
     espn_teams_response = {
         "sports": [{"leagues": [{"teams": [
             {"team": {"id": "999901", "displayName": "UMBC Retrievers",
@@ -335,7 +328,6 @@ def test_fetch_tournament_results_end_to_end(monkeypatch):
         ]}]}]
     }
 
-    # Mock scoreboard API — one completed play-in game
     scoreboard_response = {
         "events": [{
             "id": "12345",
